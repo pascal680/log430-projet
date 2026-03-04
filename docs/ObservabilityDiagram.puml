@@ -1,0 +1,22 @@
+@startuml
+node "Docker Infrastructure" {
+    component [KrakenD Gateway] as GW #LightBlue
+
+    package "Java Spring Boot App" {
+        component [API REST] as API
+        component [Service Métier] as Logic
+        component [Spring Actuator] as Actuator #Pink
+    }
+
+    database "MySQL" as DB
+    database "Redis" as Cache
+    component [Prometheus] as Prom #Orange
+}
+
+[Locust] --> GW : Tests de charge
+GW --> API : Routage / Load Balancing
+API --> Logic
+Logic --> DB
+Logic --> Cache
+Actuator --> Prom : Expose métriques [cite: 66]
+@enduml

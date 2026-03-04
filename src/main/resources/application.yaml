@@ -1,3 +1,27 @@
 spring:
   application:
     name: LOG430-projet
+
+  # Disable auto-generated security password in console
+  security:
+    user:
+      name: admin
+      password: admin123
+      roles: ADMIN
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/log430_projet
+    username: projet
+    password: projet
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+
+server:
+  port: 8080

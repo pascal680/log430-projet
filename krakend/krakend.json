@@ -1,0 +1,26 @@
+{
+  "$schema": "https://www.krakend.io/schema/v2.7/config.json",
+  "version": 3,
+  "name": "CanBankX API Gateway",
+  "port": 8080,
+  "timeout": "3s",
+  "cache_ttl": "300s",
+  "endpoints": [
+
+    {
+      "endpoint": "/api/accounts",
+      "method": "POST",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type", "Authorization"],
+      "backend": [
+        {
+          "url_pattern": "/accountservice/accounts",
+          "encoding": "json",
+          "method": "POST",
+          "host": ["http://host.docker.internal:8080"]
+        }
+      ]
+    }
+
+  ]
+}

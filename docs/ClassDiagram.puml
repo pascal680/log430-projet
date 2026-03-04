@@ -1,0 +1,34 @@
+@startuml
+package "Identity" {
+    class Client {
+        +UUID id
+        +String nasSimule
+        +Status status (PENDING, ACTIVE) [cite: 84]
+        +MfaSecret mfaKey
+    }
+}
+
+package "Account" {
+    class Account {
+        +String accountNumber
+        +Type type (CHECKING, SAVINGS) [cite: 100]
+        +Decimal balance
+    }
+}
+
+package "Transaction" {
+    class BankTransaction {
+        +String idempotencyKey [cite: 69]
+        +Decimal amount
+        +DateTime createdAt
+    }
+    class AuditEntry <<(E,#FF7700) Entity>> {
+        +String logData
+        .. Append-only .. [cite: 69]
+    }
+}
+
+Client "1" *-- "0..*" Account
+Account "1" *-- "0..*" BankTransaction
+BankTransaction --> AuditEntry : génère [cite: 121]
+@enduml

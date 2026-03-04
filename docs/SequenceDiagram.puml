@@ -1,0 +1,24 @@
+@startuml
+actor Client
+participant "KrakenD Gateway" as GW
+participant "PaymentService" as PS
+participant "Redis" as Cache
+database "MySQL" as DB
+
+Client -> GW : POST /transfer (JWT + Idempotency-Key) [cite: 69]
+GW -> PS : Forward request
+
+PS -> Cache : GET idempotencyKey
+alt Key exists (Doublon)
+    Cache --> PS : Previous Result
+    PS --> Client : 200 OK (Cached)
+else Key new
+    PS -> DB : BEGIN Transaction
+    PS -> DB : Vérifier Solde & Contrôle AML [cite: 120]
+    PS -> DB : UPDATE Account Balance (Exactly-once) [cite: 69]
+    PS -> DB : INSERT BankTransaction & AuditLog [cite: 121]
+    PS -> DB : COMMIT
+    PS -> Cache : SET idempotencyKey (TTL 24h)
+    PS --> Client : 201 Created (Solde mis à jour) [cite: 123]
+end
+@enduml
