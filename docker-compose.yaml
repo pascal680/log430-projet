@@ -1,21 +1,41 @@
 services:
+  canbankx-app:
+    build: .
+    container_name: log430-app
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - log430_projet-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8081/actuator/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   mysql:
     image: mysql:8.4.7
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: log430_projet
-      MYSQL_USER: projet
-      MYSQL_PASSWORD: projet
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
     networks:
       - log430_projet-network
     ports:
-      - "3306:3306"
+      - "${DB_PORT}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./db-init:/docker-entrypoint-initdb.d
     healthcheck:
-      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -proot" ]
+      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -p${DB_ROOT_PASSWORD}" ]
       interval: 1m
       timeout: 10s
       retries: 5
@@ -27,13 +47,14 @@ services:
     networks:
       - log430_projet-network
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT}:6379"
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 1m
       timeout: 10s
       retries: 5
       start_period: 10s
+
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -55,12 +76,13 @@ services:
     image: devopsfaith/krakend:2.7
     container_name: krakend
     ports:
-      - "8000:8080"
+      - "8080:8080"
     volumes:
       - ./krakend/krakend.json:/etc/krakend/krakend.json
     command: [ "run", "-c", "/etc/krakend/krakend.json" ]
     depends_on:
       - mysql
+      - canbankx-app
     networks:
       - log430_projet-network
     restart: unless-stopped

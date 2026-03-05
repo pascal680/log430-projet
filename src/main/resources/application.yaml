@@ -10,10 +10,15 @@ spring:
       roles: ADMIN
 
   datasource:
-    url: jdbc:mysql://localhost:3306/log430_projet
-    username: projet
-    password: projet
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:log430_projet}
+    username: ${DB_USER:projet}
+    password: ${DB_PASSWORD:projet}
     driver-class-name: com.mysql.cj.jdbc.Driver
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
 
   jpa:
     hibernate:
@@ -24,4 +29,4 @@ spring:
         dialect: org.hibernate.dialect.MySQLDialect
 
 server:
-  port: 8080
+  port: 8081

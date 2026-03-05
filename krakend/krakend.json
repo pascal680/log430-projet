@@ -17,7 +17,7 @@
           "url_pattern": "/accountservice/accounts",
           "encoding": "json",
           "method": "POST",
-          "host": ["http://host.docker.internal:8080"]
+          "host": ["http://canbankx-app:8081"]
         }
       ]
     }

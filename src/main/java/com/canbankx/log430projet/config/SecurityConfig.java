@@ -37,8 +37,10 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // Actuator health/info publicly accessible
                 .requestMatchers("/actuator/health", "/actuator/info").permitAll()
-                // Public-facing API routes (via KrakenD) and internal service routes
-                .requestMatchers("/api/**", "/accountservice/**").authenticated()
+                // Internal service routes called by KrakenD — no auth needed at this layer
+                .requestMatchers("/accountservice/**").permitAll()
+                // Public-facing gateway routes require auth
+                .requestMatchers("/api/**").authenticated()
                 // Everything else denied by default
                 .anyRequest().denyAll()
             )
