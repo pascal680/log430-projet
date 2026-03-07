@@ -1,60 +1,175 @@
 services:
-  canbankx-app:
-    build: .
-    container_name: log430-app
-    env_file:
-      - .env
+
+  # ── identity-service (UC-01, UC-02) – MySQL only ──────────────────────────
+  identity-service:
+    build:
+      context: .
+      dockerfile: identity-service/Dockerfile
+    container_name: identity-service
+    ports:
+      - "8081:8081"
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: db_identity
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      SERVER_PORT: 8081
     depends_on:
       mysql:
         condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    networks:
+      - log430_projet-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # ── account-service (UC-03, UC-04) – MySQL only ───────────────────────────
+  account-service:
+    build:
+      context: .
+      dockerfile: account-service/Dockerfile
+    container_name: account-service
+    ports:
+      - "8082:8082"
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: db_account
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      SERVER_PORT: 8082
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    networks:
+      - log430_projet-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # ── payment-service (UC-05) – MySQL + Redis (idempotency cache) ───────────
+  payment-service:
+    build:
+      context: .
+      dockerfile: payment-service/Dockerfile
+    container_name: payment-service
+    ports:
+      - "8083:8083"
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: db_payment
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SERVER_PORT: 8083
+      ACCOUNT_SERVICE_URL: http://account-service:8082
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     networks:
       - log430_projet-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD-SHELL", "curl -f http://localhost:8081/actuator/health || exit 1" ]
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/actuator/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 40s
 
+  # ── MySQL (shared host, isolated schemas per service) ────────────────────
   mysql:
     image: mysql:8.4.7
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${DB_NAME}
       MYSQL_USER: ${DB_USER}
       MYSQL_PASSWORD: ${DB_PASSWORD}
+      # MYSQL_DATABASE not set here – init.sql creates all 3 schemas
     networks:
       - log430_projet-network
     ports:
-      - "${DB_PORT}:3306"
+      - "${DB_PORT:-3306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./db-init:/docker-entrypoint-initdb.d
     healthcheck:
-      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -p${DB_ROOT_PASSWORD}" ]
-      interval: 1m
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p${DB_ROOT_PASSWORD}"]
+      interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 10s
+      start_period: 15s
 
+  # ── DB-init (re-applies grants every startup, idempotent) ─────────────────
+  # Solves the issue where MySQL volumes pre-exist and init.sql never re-runs.
+  # Mounts the same init.sql used for first-boot and replays it as root.
+  # --ssl-mode=DISABLED avoids caching_sha2_password SSL handshake issues in
+  # MySQL 8.4 when connecting from another container over the Docker bridge.
+  db-init:
+    image: mysql:8.4.7
+    restart: "no"
+    environment:
+      DB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - log430_projet-network
+    volumes:
+      - ./db-init/init.sql:/init.sql:ro
+    entrypoint:
+      - bash
+      - -c
+      - |
+        echo "Waiting for MySQL to be fully ready..."
+        until mysql -h mysql -u root -p$$DB_ROOT_PASSWORD --ssl-mode=DISABLED --get-server-public-key -e "SELECT 1" >/dev/null 2>&1; do
+          echo "MySQL not ready yet, retrying in 2s..."
+          sleep 2
+        done
+        echo "Applying grants from init.sql..."
+        if ! mysql -h mysql -u root -p$$DB_ROOT_PASSWORD --ssl-mode=DISABLED --get-server-public-key < /init.sql; then
+          echo "ERROR: init.sql failed – check MySQL logs for details."
+          exit 1
+        fi
+        echo "Grants applied successfully."
+
+  # ── Redis (payment-service idempotency cache only) ────────────────────────
   redis:
-    image: redis:7
+    image: redis:7-alpine
     restart: unless-stopped
     networks:
       - log430_projet-network
     ports:
-      - "${REDIS_PORT}:6379"
+      - "${REDIS_PORT:-6379}:6379"
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 1m
-      timeout: 10s
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
       retries: 5
       start_period: 10s
 
+  # ── Prometheus (scrapes all 3 services) ──────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -63,15 +178,11 @@ services:
     volumes:
       - ./prometheus/config.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
-    #    command:
-    #      - '--config.file=/infra/prometheus/prometheus.yml'
-    #      - '--storage.tsdb.path=/prometheus'
-    #      - '--web.console.libraries=/etc/prometheus/console_libraries'
-    #      - '--web.console.templates=/etc/prometheus/consoles'
-    #      - '--web.enable-lifecycle'
     networks:
       - log430_projet-network
+    restart: unless-stopped
 
+  # ── KrakenD API Gateway ───────────────────────────────────────────────────
   krakend:
     image: devopsfaith/krakend:2.7
     container_name: krakend
@@ -79,10 +190,11 @@ services:
       - "8080:8080"
     volumes:
       - ./krakend/krakend.json:/etc/krakend/krakend.json
-    command: [ "run", "-c", "/etc/krakend/krakend.json" ]
+    command: ["run", "-c", "/etc/krakend/krakend.json"]
     depends_on:
-      - mysql
-      - canbankx-app
+      - identity-service
+      - account-service
+      - payment-service
     networks:
       - log430_projet-network
     restart: unless-stopped
@@ -93,4 +205,5 @@ networks:
 
 volumes:
   mysql_data:
+  redis_data:
   prometheus_data:

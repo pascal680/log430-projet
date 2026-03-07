@@ -6,21 +6,122 @@
   "timeout": "3s",
   "cache_ttl": "300s",
   "endpoints": [
-
+    {
+      "endpoint": "/api/clients",
+      "method": "POST",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type", "Authorization"],
+      "backend": [{ "url_pattern": "/identityservice/clients", "encoding": "json", "method": "POST", "host": ["http://identity-service:8081"] }]
+    },
+    {
+      "endpoint": "/api/clients/{id}/activate",
+      "method": "POST",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type", "Authorization"],
+      "backend": [{ "url_pattern": "/identityservice/clients/{id}/activate", "encoding": "json", "method": "POST", "host": ["http://identity-service:8081"] }]
+    },
+    {
+      "endpoint": "/api/auth/login",
+      "method": "POST",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type"],
+      "backend": [{ "url_pattern": "/identityservice/auth/login", "encoding": "json", "method": "POST", "host": ["http://identity-service:8081"] }]
+    },
+    {
+      "endpoint": "/api/auth/mfa",
+      "method": "POST",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type"],
+      "backend": [{ "url_pattern": "/identityservice/auth/mfa", "encoding": "json", "method": "POST", "host": ["http://identity-service:8081"] }]
+    },
+    {
+      "endpoint": "/api/clients/{id}",
+      "method": "GET",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type", "Authorization"],
+      "backend": [{ "url_pattern": "/identityservice/clients/{id}", "encoding": "json", "method": "GET", "host": ["http://identity-service:8081"] }]
+    },
+    {
+      "endpoint": "/api/clients/list",
+      "method": "GET",
+      "output_encoding": "json-collection",
+      "input_headers": ["Content-Type", "Authorization"],
+      "backend": [{ "url_pattern": "/identityservice/clients", "encoding": "json", "method": "GET", "host": ["http://identity-service:8081"], "is_collection": true }]
+    },
+    {
+      "endpoint": "/api/clients/{id}/status",
+      "method": "PATCH",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type", "Authorization"],
+      "input_query_strings": ["status"],
+      "backend": [{ "url_pattern": "/identityservice/clients/{id}/status", "encoding": "json", "method": "PATCH", "host": ["http://identity-service:8081"] }]
+    },
     {
       "endpoint": "/api/accounts",
       "method": "POST",
       "output_encoding": "json",
       "input_headers": ["Content-Type", "Authorization"],
+      "backend": [{ "url_pattern": "/accountservice/accounts", "encoding": "json", "method": "POST", "host": ["http://account-service:8082"] }]
+    },
+    {
+      "endpoint": "/api/accounts/{id}/summary",
+      "method": "GET",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type", "Authorization"],
       "backend": [
         {
-          "url_pattern": "/accountservice/accounts",
+          "url_pattern": "/accountservice/accounts/number/{id}",
           "encoding": "json",
-          "method": "POST",
-          "host": ["http://canbankx-app:8081"]
+          "method": "GET",
+          "host": ["http://account-service:8082"],
+          "group": "account"
+        },
+        {
+          "url_pattern": "/paymentservice/transactions/account/{id}/recent",
+          "encoding": "json",
+          "method": "GET",
+          "host": ["http://payment-service:8083"],
+          "is_collection": true,
+          "group": "recentTransactions"
         }
       ]
+    },
+    {
+      "endpoint": "/api/accounts/{id}",
+      "method": "GET",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type", "Authorization"],
+      "backend": [{ "url_pattern": "/accountservice/accounts/{id}", "encoding": "json", "method": "GET", "host": ["http://account-service:8082"] }]
+    },
+    {
+      "endpoint": "/api/accounts/list",
+      "method": "GET",
+      "output_encoding": "json-collection",
+      "input_headers": ["Content-Type", "Authorization"],
+      "input_query_strings": ["clientId"],
+      "backend": [{ "url_pattern": "/accountservice/accounts", "encoding": "json", "method": "GET", "host": ["http://account-service:8082"], "is_collection": true }]
+    },
+    {
+      "endpoint": "/api/transactions",
+      "method": "POST",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type", "Authorization", "Idempotency-Key"],
+      "backend": [{ "url_pattern": "/paymentservice/transactions", "encoding": "json", "method": "POST", "host": ["http://payment-service:8083"] }]
+    },
+    {
+      "endpoint": "/api/transactions/{id}",
+      "method": "GET",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type", "Authorization"],
+      "backend": [{ "url_pattern": "/paymentservice/transactions/{id}", "encoding": "json", "method": "GET", "host": ["http://payment-service:8083"] }]
+    },
+    {
+      "endpoint": "/api/transactions/list",
+      "method": "GET",
+      "output_encoding": "json-collection",
+      "input_headers": ["Content-Type", "Authorization"],
+      "input_query_strings": ["accountNumber"],
+      "backend": [{ "url_pattern": "/paymentservice/transactions", "encoding": "json", "method": "GET", "host": ["http://payment-service:8083"], "is_collection": true }]
     }
-
   ]
 }
