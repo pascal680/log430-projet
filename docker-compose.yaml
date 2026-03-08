@@ -15,11 +15,15 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       SERVER_PORT: 8081
+      MAIL_HOST: mailhog
+      MAIL_PORT: 1025
     depends_on:
       mysql:
         condition: service_healthy
       db-init:
         condition: service_completed_successfully
+      mailhog:
+        condition: service_started
     networks:
       - log430_projet-network
     restart: unless-stopped
@@ -168,6 +172,17 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # ── MailHog (catches outbound emails in dev – no real SMTP needed) ─────────
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: mailhog
+    ports:
+      - "1025:1025"   # SMTP – services send mail here
+      - "8025:8025"   # Web UI – view captured emails at http://localhost:8025
+    networks:
+      - log430_projet-network
+    restart: unless-stopped
 
   # ── Prometheus (scrapes all 3 services) ──────────────────────────────────
   prometheus:

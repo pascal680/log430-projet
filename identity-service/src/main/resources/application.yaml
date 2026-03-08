@@ -23,10 +23,25 @@ spring:
         dialect: org.hibernate.dialect.MySQLDialect
         format_sql: true
 
+  mail:
+    host: ${MAIL_HOST:localhost}
+    port: ${MAIL_PORT:1025}
+    properties:
+      mail:
+        smtp:
+          auth: false
+          starttls:
+            enable: false
+
 server:
   port: ${SERVER_PORT:8081}
 
-# ── Actuator / Observability (4 Golden Signals) ──────────────────────────────
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
 management:
   endpoints:
     web:
@@ -42,10 +57,10 @@ management:
       application: identity-service
     distribution:
       percentiles-histogram:
-        http.server.requests: true       # enables P50/P95/P99 latency histograms
+        http.server.requests: true
       percentiles:
         http.server.requests: 0.5, 0.95, 0.99
     enable:
-      jvm: true                          # saturation: heap, threads, GC
+      jvm: true
       process: true
       system: true

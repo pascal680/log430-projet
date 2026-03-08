@@ -51,6 +51,13 @@ public class Client {
     @Builder.Default
     private Status status = Status.PENDING;
 
+    // OTP for email verification on registration
+    @Column(length = 6)
+    private String otpCode;
+
+    @Column
+    private Instant otpExpiry;
+
     @CreatedDate
     @Column(updatable = false)
     private Instant createdAt;

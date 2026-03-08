@@ -14,6 +14,13 @@
       "backend": [{ "url_pattern": "/identityservice/clients", "encoding": "json", "method": "POST", "host": ["http://identity-service:8081"] }]
     },
     {
+      "endpoint": "/api/clients/{id}/verify",
+      "method": "POST",
+      "output_encoding": "json",
+      "input_headers": ["Content-Type"],
+      "backend": [{ "url_pattern": "/identityservice/clients/{id}/verify", "encoding": "json", "method": "POST", "host": ["http://identity-service:8081"] }]
+    },
+    {
       "endpoint": "/api/clients/{id}/activate",
       "method": "POST",
       "output_encoding": "json",

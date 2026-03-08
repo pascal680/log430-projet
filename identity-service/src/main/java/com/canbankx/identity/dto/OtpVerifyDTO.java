@@ -8,15 +8,11 @@ import lombok.Setter;
 
 @Getter
 @Setter
-@Schema(description = "MFA challenge verification payload")
-public class MfaVerifyDTO {
-
-    @NotBlank(message = "Challenge token is required")
-    @Schema(description = "Challenge token returned by the login endpoint", example = "550e8400-e29b-41d4-a716-446655440000")
-    private String challengeToken;
+@Schema(description = "OTP code submitted by the client to activate their account")
+public class OtpVerifyDTO {
 
     @NotBlank(message = "OTP code is required")
     @Pattern(regexp = "\\d{6}", message = "OTP must be exactly 6 digits")
-    @Schema(description = "6-digit one-time password", example = "482901")
+    @Schema(description = "6-digit verification code sent by email", example = "482901")
     private String otpCode;
 }

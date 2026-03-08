@@ -21,9 +21,17 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.MySQLDialect
         format_sql: true
+        type:
+          preferred_uuid_jdbc_type: char
 
 server:
   port: ${SERVER_PORT:8082}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
 
 # ── Actuator / Observability (4 Golden Signals) ──────────────────────────────
 management:

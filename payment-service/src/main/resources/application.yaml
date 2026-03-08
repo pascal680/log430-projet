@@ -37,6 +37,12 @@ spring:
 server:
   port: ${SERVER_PORT:8083}
 
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
 # ── Inter-service HTTP client configuration ───────────────────────────────────
 services:
   account:

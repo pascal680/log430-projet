@@ -3,6 +3,8 @@ package com.canbankx.identity.controller;
 import com.canbankx.identity.dto.*;
 import com.canbankx.identity.model.Client;
 import com.canbankx.identity.service.ClientService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequestMapping("/identityservice/auth")
 @RequiredArgsConstructor
 @Slf4j
+@Tag(name = "Auth", description = "Login and MFA verification")
 public class AuthController {
 
     private final ClientService clientService;
@@ -25,6 +28,7 @@ public class AuthController {
     private final Map<String, String> pendingChallenges = new ConcurrentHashMap<>();
 
     @PostMapping("/login")
+    @Operation(summary = "Login", description = "Validates credentials and returns an MFA challenge token")
     public ResponseEntity<MfaChallengeDTO> login(@Valid @RequestBody LoginRequestDTO dto) {
         Client client = clientService.authenticate(dto.getEmail(), dto.getPassword());
 
@@ -39,6 +43,7 @@ public class AuthController {
     }
 
     @PostMapping("/mfa")
+    @Operation(summary = "Verify MFA", description = "Exchanges a challenge token + OTP for an auth confirmation")
     public ResponseEntity<AuthResponseDTO> verifyMfa(@Valid @RequestBody MfaVerifyDTO dto) {
         String clientId = pendingChallenges.remove(dto.getChallengeToken());
 
