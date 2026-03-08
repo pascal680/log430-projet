@@ -7,6 +7,7 @@ import com.canbankx.identity.model.enums.Status;
 import com.canbankx.identity.repository.ClientRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,10 +32,10 @@ public class ClientService {
     @Transactional
     public Client register(ClientRegistrationDTO dto) {
         if (clientRepository.existsByEmail(dto.getEmail())) {
-            throw new IllegalArgumentException("Email already in use: " + dto.getEmail());
+            throw new IllegalStateException("Email already in use: " + dto.getEmail());
         }
         if (clientRepository.existsByNas(dto.getNas())) {
-            throw new IllegalArgumentException("NAS already registered.");
+            throw new IllegalStateException("NAS already registered.");
         }
 
         String otp = generateOtp();
@@ -68,7 +69,7 @@ public class ClientService {
         Client client = getById(id);
 
         if (client.getStatus() == Status.ACTIVE) {
-            throw new IllegalArgumentException("Account is already active.");
+            throw new IllegalStateException("Account is already active.");
         }
         if (client.getOtpCode() == null || client.getOtpExpiry() == null) {
             throw new IllegalStateException("No OTP pending for this account.");
@@ -77,7 +78,7 @@ public class ClientService {
             throw new IllegalStateException("OTP has expired. Please request a new one.");
         }
         if (!client.getOtpCode().equals(otpCode)) {
-            throw new IllegalArgumentException("Invalid OTP code.");
+            throw new BadCredentialsException("Invalid OTP code.");
         }
 
         client.setStatus(Status.ACTIVE);
@@ -90,7 +91,7 @@ public class ClientService {
     public Client activate(UUID id) {
         Client client = getById(id);
         if (client.getStatus() == Status.ACTIVE) {
-            throw new IllegalArgumentException("Client is already ACTIVE.");
+            throw new IllegalStateException("Client is already ACTIVE.");
         }
         client.setStatus(Status.ACTIVE);
         return clientRepository.save(client);
@@ -105,7 +106,7 @@ public class ClientService {
         Client client = clientRepository.findByEmail(email)
                 .orElseThrow(() -> new ClientNotFoundException(email));
         if (!passwordEncoder.matches(rawPassword, client.getPassword())) {
-            throw new IllegalArgumentException("Invalid credentials.");
+            throw new BadCredentialsException("Invalid credentials.");
         }
         if (client.getStatus() != Status.ACTIVE) {
             throw new IllegalStateException("Account is not ACTIVE. Current status: " + client.getStatus());

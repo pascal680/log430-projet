@@ -6,7 +6,7 @@ scrape_configs:
   - job_name: 'identity-service'
     metrics_path: '/actuator/prometheus'
     static_configs:
-      - targets: ['identity-service:8081']
+      - targets: ['identity-service:8081', 'identity-service-2:8081']
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance
@@ -14,7 +14,7 @@ scrape_configs:
   - job_name: 'account-service'
     metrics_path: '/actuator/prometheus'
     static_configs:
-      - targets: ['account-service:8082']
+      - targets: ['account-service:8082', 'account-service-2:8082']
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance
@@ -22,7 +22,14 @@ scrape_configs:
   - job_name: 'payment-service'
     metrics_path: '/actuator/prometheus'
     static_configs:
-      - targets: ['payment-service:8083']
+      - targets: ['payment-service:8083', 'payment-service-2:8083']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+  - job_name: 'nginx-lb'
+    static_configs:
+      - targets: ['nginx-exporter:9113']
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance

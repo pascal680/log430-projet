@@ -64,21 +64,32 @@ public class AccountService {
         return accountRepository.findAll();
     }
 
+    /**
+     * Atomically debits the account.  Returns void so the exclusive row lock
+     * is released as soon as this transaction commits — the caller fetches the
+     * updated balance in a separate read-only transaction.
+     */
     @Transactional
-    public Account debit(String accountNumber, BigDecimal amount) {
-        Account account = getAccountByNumber(accountNumber);
-        if (account.getBalance().compareTo(amount) < 0) {
+    public void debit(String accountNumber, BigDecimal amount) {
+        int updated = accountRepository.atomicDebit(accountNumber, amount);
+        if (updated == 0) {
+            if (!accountRepository.findByAccountNumber(accountNumber).isPresent()) {
+                throw new AccountNotFoundException(accountNumber);
+            }
             throw new InsufficientFundsException(accountNumber);
         }
-        account.setBalance(account.getBalance().subtract(amount));
-        return accountRepository.save(account);
+        // No post-UPDATE SELECT here — lock released on commit immediately.
     }
 
+    /**
+     * Atomically credits the account.  Same pattern as debit.
+     */
     @Transactional
-    public Account credit(String accountNumber, BigDecimal amount) {
-        Account account = getAccountByNumber(accountNumber);
-        account.setBalance(account.getBalance().add(amount));
-        return accountRepository.save(account);
+    public void credit(String accountNumber, BigDecimal amount) {
+        int updated = accountRepository.atomicCredit(accountNumber, amount);
+        if (updated == 0) {
+            throw new AccountNotFoundException(accountNumber);
+        }
     }
 
     private String generateUniqueAccountNumber() {

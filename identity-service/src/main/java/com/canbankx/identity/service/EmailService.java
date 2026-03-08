@@ -25,8 +25,31 @@ public class EmailService {
             "If you did not register, ignore this email.\n\n" +
             "– CanBankX Team"
         );
-
         mailSender.send(message);
         log.info("OTP email sent to {}", toEmail);
+    }
+
+    /**
+     * Sends the MFA login OTP.
+     * The challengeToken is embedded in the body so automated tests can
+     * correlate the email to the exact login request (no race condition
+     * when multiple VUs log in concurrently with the same account).
+     */
+    public void sendMfaOtp(String toEmail, String firstName, String otpCode, String challengeToken) {
+        SimpleMailMessage message = new SimpleMailMessage();
+        message.setFrom("no-reply@canbankx.ca");
+        message.setTo(toEmail);
+        message.setSubject("CanBankX – Your login code");
+        message.setText(
+            "Hello " + firstName + ",\n\n" +
+            "Your login code is: " + otpCode + "\n\n" +
+            "This code expires in 5 minutes.\n" +
+            "Do not share this code with anyone.\n\n" +
+            "If you did not request this, please secure your account immediately.\n\n" +
+            "Reference: " + challengeToken + "\n\n" +
+            "– CanBankX Team"
+        );
+        mailSender.send(message);
+        log.info("MFA OTP email sent to {}", toEmail);
     }
 }

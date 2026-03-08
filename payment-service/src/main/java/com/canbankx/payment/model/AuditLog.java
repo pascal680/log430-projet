@@ -12,8 +12,9 @@ import java.util.UUID;
 @Table(
     name = "audit_log",
     indexes = {
-        @Index(name = "idx_audit_tx_id",  columnList = "transactionId"),
-        @Index(name = "idx_audit_created", columnList = "createdAt")
+        // columnList must use physical (snake_case) column names – Hibernate 6 / Spring Boot 4
+        @Index(name = "idx_audit_tx_id",   columnList = "transaction_id"),
+        @Index(name = "idx_audit_created", columnList = "created_at")
     }
 )
 @EntityListeners(AuditingEntityListener.class)

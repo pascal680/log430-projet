@@ -9,6 +9,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.client.HttpStatusCodeException;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -61,6 +62,25 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleIllegalState(IllegalStateException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ErrorResponse(409, "Conflict", ex.getMessage()));
+    }
+
+    /**
+     * Handles HTTP client errors propagated from inter-service calls (RestClient / RestTemplate).
+     * For example, when payment-service calls account-service and receives a 422 (Insufficient Funds)
+     * or 404 (Account Not Found), the RestClient throws HttpClientErrorException which extends
+     * HttpStatusCodeException. This handler re-maps it to the original upstream status code
+     * instead of falling through to the generic 500 RuntimeException handler.
+     */
+    @ExceptionHandler(HttpStatusCodeException.class)
+    public ResponseEntity<ErrorResponse> handleHttpStatusCode(HttpStatusCodeException ex) {
+        int code = ex.getStatusCode().value();
+        String reason = (ex.getStatusText() != null && !ex.getStatusText().isBlank())
+                ? ex.getStatusText()
+                : (HttpStatus.resolve(code) != null ? HttpStatus.resolve(code).getReasonPhrase() : "Error");
+        String body = ex.getResponseBodyAsString();
+        String message = (body != null && !body.isBlank()) ? body : ex.getMessage();
+        return ResponseEntity.status(code)
+                .body(new ErrorResponse(code, reason, message));
     }
 
     @ExceptionHandler(RuntimeException.class)

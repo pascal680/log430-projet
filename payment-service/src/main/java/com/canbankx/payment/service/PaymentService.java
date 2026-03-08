@@ -1,6 +1,9 @@
 package com.canbankx.payment.service;
 
 import com.canbankx.payment.client.AccountClient;
+import com.canbankx.payment.client.IdentityClient;
+import com.canbankx.payment.dto.AccountInfoDTO;
+import com.canbankx.payment.dto.ClientInfoDTO;
 import com.canbankx.payment.exceptions.PaymentNotFoundException;
 import com.canbankx.payment.dto.PaymentRequestDTO;
 import com.canbankx.payment.model.AuditLog;
@@ -11,15 +14,19 @@ import com.canbankx.payment.repository.AuditLogRepository;
 import com.canbankx.payment.repository.BankTransactionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.springframework.data.domain.Pageable;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 @Service
 @RequiredArgsConstructor
@@ -31,8 +38,14 @@ public class PaymentService {
 
     private final BankTransactionRepository transactionRepository;
     private final AuditLogRepository auditLogRepository;
+    private final EmailService emailService;
     private final AccountClient accountClient;
+    private final IdentityClient identityClient;
     private final StringRedisTemplate redisTemplate;
+
+    /** Background thread pool for fire-and-forget email notifications. */
+    @Qualifier("emailTaskExecutor")
+    private final Executor emailTaskExecutor;
 
     public BankTransaction submit(String idempotencyKey, PaymentRequestDTO dto) {
         String redisKey = REDIS_KEY_PREFIX + idempotencyKey;
@@ -80,24 +93,32 @@ public class PaymentService {
 
         boolean sourceDebited = false;
         try {
-            accountClient.debit(dto.getSourceAccountNumber(), dto.getAmount(), txRef);
-            sourceDebited = true;
-            auditStep(tx.getId(), "BALANCE_DEBITED",
-                    "Debited " + dto.getAmount() + " from " + dto.getSourceAccountNumber());
-
-            if (dto.getType() == TransactionType.TRANSFER) {
-                accountClient.credit(dto.getTargetAccountNumber(), dto.getAmount(), txRef);
-                auditStep(tx.getId(), "BALANCE_CREDITED",
-                        "Credited " + dto.getAmount() + " to " + dto.getTargetAccountNumber());
-            } else if (dto.getType() == TransactionType.CREDIT) {
+            if (dto.getType() == TransactionType.CREDIT) {
+                // Deposit: only credit the source account — no prior debit.
+                // (Previously debit+credit was applied to the same account = net zero, which was a bug.)
                 accountClient.credit(dto.getSourceAccountNumber(), dto.getAmount(), txRef);
                 auditStep(tx.getId(), "BALANCE_CREDITED",
-                        "Credited " + dto.getAmount() + " to " + dto.getSourceAccountNumber());
+                        "Deposited " + dto.getAmount() + " into " + dto.getSourceAccountNumber());
+            } else {
+                // DEBIT (withdrawal) or TRANSFER: always debit the source account first.
+                accountClient.debit(dto.getSourceAccountNumber(), dto.getAmount(), txRef);
+                sourceDebited = true;
+                auditStep(tx.getId(), "BALANCE_DEBITED",
+                        "Debited " + dto.getAmount() + " from " + dto.getSourceAccountNumber());
+
+                if (dto.getType() == TransactionType.TRANSFER) {
+                    accountClient.credit(dto.getTargetAccountNumber(), dto.getAmount(), txRef);
+                    auditStep(tx.getId(), "BALANCE_CREDITED",
+                            "Credited " + dto.getAmount() + " to " + dto.getTargetAccountNumber());
+                }
             }
 
             tx = completeTransaction(tx.getId());
             redisTemplate.opsForValue().set(redisKey, txRef, IDEM_TTL);
             log.info("Payment [{}] COMPLETED. Idempotency key cached {} h.", txRef, IDEM_TTL.toHours());
+
+            // ── Send payment confirmation email (fire-and-forget) ─────────────
+            sendConfirmationEmail(tx);
 
         } catch (Exception ex) {
             if (sourceDebited && dto.getType() == TransactionType.TRANSFER) {
@@ -110,6 +131,12 @@ public class PaymentService {
             }
             failTransaction(tx.getId(), ex.getMessage());
             log.error("Payment [{}] FAILED: {}", txRef, ex.getMessage());
+            // Re-throw the original exception to preserve its HTTP status code
+            // (e.g. HttpClientErrorException.UnprocessableEntity for 422 insufficient funds,
+            //       HttpClientErrorException.NotFound for 404 account not found).
+            if (ex instanceof RuntimeException rte) {
+                throw rte;
+            }
             throw new RuntimeException("Payment failed: " + ex.getMessage(), ex);
         }
 
@@ -128,6 +155,11 @@ public class PaymentService {
     }
 
     @Transactional(readOnly = true)
+    public List<BankTransaction> getByAccountNumber(String accountNumber, Pageable pageable) {
+        return transactionRepository.findBySourceAccountNumber(accountNumber, pageable);
+    }
+
+    @Transactional(readOnly = true)
     public List<BankTransaction> getRecentByAccountNumber(String accountNumber) {
         return transactionRepository.findTop10BySourceAccountNumberOrderByCreatedAtDesc(accountNumber);
     }
@@ -135,6 +167,11 @@ public class PaymentService {
     @Transactional(readOnly = true)
     public List<BankTransaction> getAll() {
         return transactionRepository.findAll();
+    }
+
+    @Transactional(readOnly = true)
+    public List<BankTransaction> getAll(Pageable pageable) {
+        return transactionRepository.findAllBy(pageable);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -186,5 +223,29 @@ public class PaymentService {
         });
         auditLogRepository.save(AuditLog.builder()
                 .transactionId(txId).action("TRANSFER_FAILED").detail(reason).build());
+    }
+
+    /**
+     * Submits the entire email confirmation flow (account lookup + client lookup + SMTP)
+     * to the background executor so the payment HTTP response is returned immediately.
+     */
+    private void sendConfirmationEmail(BankTransaction tx) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                AccountInfoDTO account = accountClient.getAccountByNumber(tx.getSourceAccountNumber());
+                if (account == null || account.clientId() == null) {
+                    log.warn("Could not resolve clientId for account [{}] – email skipped.", tx.getSourceAccountNumber());
+                    return;
+                }
+                ClientInfoDTO client = identityClient.getClientById(account.clientId());
+                if (client == null || client.email() == null) {
+                    log.warn("Could not resolve email for clientId [{}] – email skipped.", account.clientId());
+                    return;
+                }
+                emailService.sendTransactionConfirmation(client.email(), client.firstName(), tx);
+            } catch (Exception e) {
+                log.warn("Failed to send confirmation email for tx [{}]: {}", tx.getId(), e.getMessage());
+            }
+        }, emailTaskExecutor);
     }
 }

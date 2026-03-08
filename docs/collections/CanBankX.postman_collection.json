@@ -2,7 +2,7 @@
   "info": {
     "name": "CanBankX API",
     "_postman_id": "canbankx-collection-2026",
-    "description": "All business requests route through **KrakenD API Gateway (port 8080)**.\nDirect service ports are only used for health checks and internal endpoints not exposed by the gateway.\n\n| Layer | URL |\n|---|---|\n| KrakenD Gateway | http://localhost:8080 |\n| Identity (internal) | http://localhost:8081 |\n| Account (internal)  | http://localhost:8082 |\n| Payment (internal)  | http://localhost:8083 |\n\n**Happy-path flow:**\n1. Register Client → POST /api/clients\n2. Activate Client  → POST /api/clients/{id}/activate\n3. Login            → POST /api/auth/login  (save challengeToken)\n4. Verify MFA       → POST /api/auth/mfa   (otpCode = 123456)\n5. Create Account   → POST /api/accounts\n6. Submit Payment   → POST /api/transactions\n7. View Summary     → GET  /api/accounts/{number}/summary",
+    "description": "All business requests route through **KrakenD API Gateway (port 8080)**.\nDirect service ports are only used for health checks and internal endpoints not exposed by the gateway.\n\n| Layer | URL |\n|---|---|\n| KrakenD Gateway | http://localhost:8080 |\n| Identity (internal) | http://localhost:8081 |\n| Account (internal)  | http://localhost:8082 |\n| Payment (internal)  | http://localhost:8083 |\n| MailHog (email UI)  | http://localhost:8025 |\n\n**Happy-path flow (with email OTP):**\n1. Register Client  → POST /api/clients  *(OTP sent to email)*\n2. Verify OTP       → POST /api/clients/{id}/verify  *(otpCode from MailHog inbox)*\n3. Login            → POST /api/auth/login  *(real 6-digit OTP sent to email, saves challengeToken)*\n4. Verify MFA       → POST /api/auth/mfa  *(otpCode auto-fetched from MailHog via pre-request script)*\n5. Create Account   → POST /api/accounts\n6. Submit Payment   → POST /api/transactions\n7. View Summary     → GET  /api/accounts/{number}/summary\n\n**Happy-path flow (admin bypass):**\n1. Register Client  → POST /api/clients\n2. Activate Client  → POST /api/clients/{id}/activate\n3. (continue from step 3 above)\n\n**MFA flow detail:**\nThe Login endpoint now generates a real 6-digit OTP and emails it to the client.\nThe 'Verify MFA' request uses a pre-request script to automatically fetch the OTP\nfrom MailHog (http://localhost:8025) — no manual copy-paste required.\nYou can also open the MailHog UI in a browser to read the email manually.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -10,15 +10,18 @@
     { "key": "identity_url",   "value": "http://localhost:8081", "description": "Direct — only for health / endpoints not in gateway" },
     { "key": "account_url",    "value": "http://localhost:8082", "description": "Direct — only for health / internal endpoints" },
     { "key": "payment_url",    "value": "http://localhost:8083", "description": "Direct — only for health / internal endpoints" },
-    { "key": "client_id",      "value": "" },
-    { "key": "account_id",     "value": "" },
-    { "key": "account_number", "value": "" },
-    { "key": "transaction_id", "value": "" },
-    { "key": "challenge_token","value": "" }
+    { "key": "mailhog_url",    "value": "http://localhost:8025", "description": "MailHog SMTP capture UI — view emails and OTP codes here" },
+    { "key": "client_id",             "value": "" },
+    { "key": "account_id",            "value": "" },
+    { "key": "account_number",        "value": "" },
+    { "key": "target_account_number", "value": "", "description": "Set this to a second account number to enable the TRANSFER happy-path test" },
+    { "key": "transaction_id",        "value": "" },
+    { "key": "challenge_token",       "value": "" },
+    { "key": "mfa_otp",               "value": "", "description": "Auto-populated by the Verify MFA pre-request script from MailHog" }
   ],
   "item": [
     {
-      "name": "🏦 Identity — via KrakenD :8080",
+      "name": "Identity — via KrakenD :8080",
       "item": [
         {
           "name": "UC-01 — Register Client",
@@ -49,11 +52,42 @@
               "host": ["{{gateway_url}}"],
               "path": ["api", "clients"]
             },
-            "description": "KrakenD → POST /identityservice/clients on identity-service:8081"
+            "description": "KrakenD → POST /identityservice/clients on identity-service:8081\nCreates a PENDING account and sends a 6-digit OTP to the client's email."
           }
         },
         {
-          "name": "UC-01 — Activate Client (Admin)",
+          "name": "UC-01 — Verify Email OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const body = pm.response.json();",
+                  "    console.log('Client status after OTP verify:', body.status);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"otpCode\": \"123456\"\n}"
+            },
+            "url": {
+              "raw": "{{gateway_url}}/api/clients/{{client_id}}/verify",
+              "host": ["{{gateway_url}}"],
+              "path": ["api", "clients", "{{client_id}}", "verify"]
+            },
+            "description": "KrakenD → POST /identityservice/clients/{id}/verify\nActivates the client account by validating the 6-digit OTP sent by email.\nUse this instead of the admin activate if you want to test the real OTP flow."
+          }
+        },
+        {
+          "name": "UC-01 — Activate Client (Admin bypass)",
           "request": {
             "method": "POST",
             "header": [],
@@ -62,7 +96,7 @@
               "host": ["{{gateway_url}}"],
               "path": ["api", "clients", "{{client_id}}", "activate"]
             },
-            "description": "KrakenD → POST /identityservice/clients/{id}/activate"
+            "description": "KrakenD → POST /identityservice/clients/{id}/activate\nDirectly activates a client (admin use, bypasses OTP verification)."
           }
         },
         {
@@ -87,7 +121,8 @@
               "raw": "{{gateway_url}}/api/clients/{{client_id}}",
               "host": ["{{gateway_url}}"],
               "path": ["api", "clients", "{{client_id}}"]
-            }
+            },
+            "description": "KrakenD → GET /identityservice/clients/{id}"
           }
         },
         {
@@ -100,7 +135,8 @@
               "host": ["{{gateway_url}}"],
               "path": ["api", "clients", "{{client_id}}", "status"],
               "query": [{ "key": "status", "value": "INACTIVE", "description": "ACTIVE | INACTIVE | CLOSED | PENDING" }]
-            }
+            },
+            "description": "KrakenD → PATCH /identityservice/clients/{id}/status?status=..."
           }
         },
         {
@@ -132,30 +168,74 @@
               "host": ["{{gateway_url}}"],
               "path": ["api", "auth", "login"]
             },
-            "description": "KrakenD → POST /identityservice/auth/login"
+            "description": "KrakenD → POST /identityservice/auth/login\nValidates credentials, generates a real 6-digit OTP, and emails it to the client.\nReturns a `challengeToken` to include in the MFA step.\nOpen MailHog (http://localhost:8025) to read the code, or let the 'Verify MFA' pre-request script fetch it automatically."
           }
         },
         {
           "name": "UC-02 — Verify MFA (MFA Step 2)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Auto-fetch the MFA OTP from MailHog matching the current challengeToken.",
+                  "// The login email embeds the challengeToken so concurrent logins are",
+                  "// correlated without race conditions.",
+                  "const mailhogUrl = pm.collectionVariables.get('mailhog_url') || 'http://localhost:8025';",
+                  "const challengeToken = pm.collectionVariables.get('challenge_token');",
+                  "",
+                  "if (!challengeToken) {",
+                  "    console.warn('challenge_token is not set — run UC-02 Login first.');",
+                  "} else {",
+                  "    pm.sendRequest(mailhogUrl + '/api/v2/messages?limit=20', function(err, res) {",
+                  "        if (err) { console.error('MailHog fetch error:', err); return; }",
+                  "        const data = res.json();",
+                  "        if (!data || !data.items || data.items.length === 0) {",
+                  "            console.warn('No emails found in MailHog inbox.'); return;",
+                  "        }",
+                  "        // Find the MFA email whose body contains our exact challengeToken",
+                  "        const mfaEmail = data.items.find(function(m) {",
+                  "            const body = (m.Content && m.Content.Body) || '';",
+                  "            return body.includes(challengeToken);",
+                  "        });",
+                  "        if (!mfaEmail) {",
+                  "            console.warn('No MFA email found for challengeToken:', challengeToken); return;",
+                  "        }",
+                  "        const body = mfaEmail.Content.Body;",
+                  "        // Extract the 6-digit OTP following 'Your login code is: '",
+                  "        const otpMatch = body.match(/Your login code is:\\s*(\\d{6})/);",
+                  "        if (otpMatch) {",
+                  "            pm.collectionVariables.set('mfa_otp', otpMatch[1]);",
+                  "            console.log('MFA OTP auto-fetched from MailHog:', otpMatch[1]);",
+                  "        } else {",
+                  "            console.warn('Could not extract OTP from email body.');",
+                  "        }",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"challengeToken\": \"{{challenge_token}}\",\n  \"otpCode\": \"123456\"\n}"
+              "raw": "{\n  \"challengeToken\": \"{{challenge_token}}\",\n  \"otpCode\": \"{{mfa_otp}}\"\n}"
             },
             "url": {
               "raw": "{{gateway_url}}/api/auth/mfa",
               "host": ["{{gateway_url}}"],
               "path": ["api", "auth", "mfa"]
             },
-            "description": "OTP is simulated — any 6-digit code works (use 123456)."
+            "description": "KrakenD → POST /identityservice/auth/mfa\nThe pre-request script automatically fetches the real 6-digit OTP from MailHog\n(http://localhost:8025) by matching the `challengeToken` embedded in the login email.\nNo manual copy-paste required — just send this request after UC-02 Login.\n\n**If MailHog shows no email:** the OTP is always logged to the identity-service container.\nRun:  docker compose logs identity-service | grep MFA-OTP\nThen paste the 6-digit code into the `mfa_otp` collection variable manually.\n\nThe token is single-use: if the wrong OTP is submitted you must re-run Login to get a new one."
           }
         }
       ]
     },
     {
-      "name": "💳 Account — via KrakenD :8080",
+      "name": "Account — via KrakenD :8080",
       "item": [
         {
           "name": "UC-03 — Create Account (CHECKING)",
@@ -204,7 +284,8 @@
               "raw": "{{gateway_url}}/api/accounts",
               "host": ["{{gateway_url}}"],
               "path": ["api", "accounts"]
-            }
+            },
+            "description": "KrakenD → POST /accountservice/accounts"
           }
         },
         {
@@ -230,7 +311,7 @@
               "host": ["{{gateway_url}}"],
               "path": ["api", "accounts", "{{account_number}}", "summary"]
             },
-            "description": "KrakenD aggregates two backends in one call:\n- account-service  → account details\n- payment-service  → last 10 transactions\nResponse: { \"account\": {...}, \"recentTransactions\": [...] }"
+            "description": "KrakenD aggregates two backends in one call:\n- account-service  → account details          (group: 'account')\n- payment-service  → last 10 transactions    (group: 'recentTransactions')\nResponse: { \"account\": {...}, \"recentTransactions\": [...] }"
           }
         },
         {
@@ -242,14 +323,15 @@
               "raw": "{{gateway_url}}/api/accounts/list?clientId={{client_id}}",
               "host": ["{{gateway_url}}"],
               "path": ["api", "accounts", "list"],
-              "query": [{ "key": "clientId", "value": "{{client_id}}", "description": "Remove to list all accounts" }]
-            }
+              "query": [{ "key": "clientId", "value": "{{client_id}}", "description": "Remove or leave blank to list all accounts" }]
+            },
+            "description": "KrakenD → GET /accountservice/accounts?clientId=..."
           }
         }
       ]
     },
     {
-      "name": "💸 Payment — via KrakenD :8080",
+      "name": "Payment — via KrakenD :8080",
       "item": [
         {
           "name": "UC-05 — Submit DEBIT Transaction",
@@ -283,7 +365,7 @@
               "host": ["{{gateway_url}}"],
               "path": ["api", "transactions"]
             },
-            "description": "KrakenD → POST /paymentservice/transactions\nChange Idempotency-Key for each new transaction. Reusing the same key returns the original transaction."
+            "description": "KrakenD → POST /paymentservice/transactions\nChange Idempotency-Key for each new transaction. Reusing the same key returns the original transaction (idempotency)."
           }
         },
         {
@@ -302,26 +384,56 @@
               "raw": "{{gateway_url}}/api/transactions",
               "host": ["{{gateway_url}}"],
               "path": ["api", "transactions"]
-            }
+            },
+            "description": "KrakenD → POST /paymentservice/transactions"
           }
         },
         {
           "name": "UC-05 — Submit TRANSFER Transaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "const target = pm.collectionVariables.get('target_account_number');",
+                  "if (!target || target.trim() === '') {",
+                  "    console.warn('  TRANSFER skipped — set the target_account_number collection variable to a real account number first.');",
+                  "    pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('transaction_id', body.id);",
+                  "    console.log('transfer transaction_id saved:', body.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
               { "key": "Content-Type", "value": "application/json" },
-              { "key": "Idempotency-Key", "value": "{{$randomUUID}}", "description": "Auto-generated UUID ensures a fresh key on every send. Copy the value from the Postman console to re-send the same key for idempotency testing." }
+              { "key": "Idempotency-Key", "value": "{{$randomUUID}}", "description": "Auto-generated UUID ensures a fresh key on every send." }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"sourceAccountNumber\": \"{{account_number}}\",\n  \"targetAccountNumber\": \"REPLACE_WITH_TARGET_ACCOUNT_NUMBER\",\n  \"amount\": 100.00,\n  \"type\": \"TRANSFER\"\n}"
+              "raw": "{\n  \"sourceAccountNumber\": \"{{account_number}}\",\n  \"targetAccountNumber\": \"{{target_account_number}}\",\n  \"amount\": 100.00,\n  \"type\": \"TRANSFER\"\n}"
             },
             "url": {
               "raw": "{{gateway_url}}/api/transactions",
               "host": ["{{gateway_url}}"],
               "path": ["api", "transactions"]
-            }
+            },
+            "description": "KrakenD → POST /paymentservice/transactions\n\n**Setup required:** Set the `target_account_number` collection variable to a second account number before running.\nIf the variable is empty the request is automatically skipped.\n\nExpected: 201 Created"
           }
         },
         {
@@ -340,7 +452,8 @@
               "raw": "{{gateway_url}}/api/transactions",
               "host": ["{{gateway_url}}"],
               "path": ["api", "transactions"]
-            }
+            },
+            "description": "Reuses the same Idempotency-Key as 'Submit DEBIT'. Should return the original transaction without creating a duplicate."
           }
         },
         {
@@ -352,7 +465,8 @@
               "raw": "{{gateway_url}}/api/transactions/{{transaction_id}}",
               "host": ["{{gateway_url}}"],
               "path": ["api", "transactions", "{{transaction_id}}"]
-            }
+            },
+            "description": "KrakenD → GET /paymentservice/transactions/{id}"
           }
         },
         {
@@ -364,89 +478,403 @@
               "raw": "{{gateway_url}}/api/transactions/list?accountNumber={{account_number}}",
               "host": ["{{gateway_url}}"],
               "path": ["api", "transactions", "list"],
-              "query": [{ "key": "accountNumber", "value": "{{account_number}}", "description": "Remove to list all transactions" }]
-            }
+              "query": [{ "key": "accountNumber", "value": "{{account_number}}", "description": "Remove or leave blank to list all transactions" }]
+            },
+            "description": "KrakenD → GET /paymentservice/transactions?accountNumber=..."
           }
         }
       ]
     },
     {
-      "name": "🔧 Internal / Not in Gateway",
+      "name": "🔧 Internal / Direct (not in Gateway)",
       "description": "Endpoints not exposed by KrakenD. Hit the services directly for debugging or admin use.",
       "item": [
         {
-          "name": "Account — Debit (internal, called by payment-service)",
-          "request": {
-            "method": "PATCH",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"amount\": 100.00,\n  \"transactionRef\": \"manual-test\"\n}"
+          "name": "── Identity (direct :8081) ──",
+          "item": [
+            {
+              "name": "Identity — List All Clients (direct)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{identity_url}}/identityservice/clients",
+                  "host": ["{{identity_url}}"],
+                  "path": ["identityservice", "clients"]
+                },
+                "description": "Direct → GET /identityservice/clients"
+              }
             },
-            "url": {
-              "raw": "{{account_url}}/accountservice/accounts/number/{{account_number}}/debit",
-              "host": ["{{account_url}}"],
-              "path": ["accountservice", "accounts", "number", "{{account_number}}", "debit"]
-            }
-          }
-        },
-        {
-          "name": "Account — Credit (internal, called by payment-service)",
-          "request": {
-            "method": "PATCH",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"amount\": 100.00,\n  \"transactionRef\": \"manual-test\"\n}"
+            {
+              "name": "Identity — Get Client by ID (direct)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{identity_url}}/identityservice/clients/{{client_id}}",
+                  "host": ["{{identity_url}}"],
+                  "path": ["identityservice", "clients", "{{client_id}}"]
+                }
+              }
             },
-            "url": {
-              "raw": "{{account_url}}/accountservice/accounts/number/{{account_number}}/credit",
-              "host": ["{{account_url}}"],
-              "path": ["accountservice", "accounts", "number", "{{account_number}}", "credit"]
-            }
-          }
-        },
-        {
-          "name": "Account — Get by Account Number (direct)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{account_url}}/accountservice/accounts/number/{{account_number}}",
-              "host": ["{{account_url}}"],
-              "path": ["accountservice", "accounts", "number", "{{account_number}}"]
-            }
-          }
-        },
-        {
-          "name": "Payment — Get Audit Trail (direct)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{payment_url}}/paymentservice/transactions/{{transaction_id}}/audit",
-              "host": ["{{payment_url}}"],
-              "path": ["paymentservice", "transactions", "{{transaction_id}}", "audit"]
+            {
+              "name": "Identity — Register Client (direct)",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"firstName\": \"Marie\",\n  \"lastName\": \"Dupont\",\n  \"email\": \"marie.dupont@canbankx.ca\",\n  \"password\": \"SecurePass123!\",\n  \"phoneNumber\": \"5149876543\",\n  \"address\": \"456 Rue Sherbrooke, Montréal, QC H3A 1E3\",\n  \"nas\": \"987654321\"\n}"
+                },
+                "url": {
+                  "raw": "{{identity_url}}/identityservice/clients",
+                  "host": ["{{identity_url}}"],
+                  "path": ["identityservice", "clients"]
+                }
+              }
             },
-            "description": "Full OSFI/FINTRAC audit log: INITIATED → DEBITED → CREDITED → COMPLETED/FAILED"
-          }
+            {
+              "name": "Identity — Verify OTP (direct)",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"otpCode\": \"123456\"\n}"
+                },
+                "url": {
+                  "raw": "{{identity_url}}/identityservice/clients/{{client_id}}/verify",
+                  "host": ["{{identity_url}}"],
+                  "path": ["identityservice", "clients", "{{client_id}}", "verify"]
+                }
+              }
+            },
+            {
+              "name": "Identity — Activate Client (direct)",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{identity_url}}/identityservice/clients/{{client_id}}/activate",
+                  "host": ["{{identity_url}}"],
+                  "path": ["identityservice", "clients", "{{client_id}}", "activate"]
+                }
+              }
+            },
+            {
+              "name": "Identity — Update Client Status (direct)",
+              "request": {
+                "method": "PATCH",
+                "header": [],
+                "url": {
+                  "raw": "{{identity_url}}/identityservice/clients/{{client_id}}/status?status=INACTIVE",
+                  "host": ["{{identity_url}}"],
+                  "path": ["identityservice", "clients", "{{client_id}}", "status"],
+                  "query": [{ "key": "status", "value": "INACTIVE", "description": "ACTIVE | INACTIVE | CLOSED | PENDING" }]
+                }
+              }
+            },
+            {
+              "name": "Identity — Deactivate Client / Delete (direct)",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{identity_url}}/identityservice/clients/{{client_id}}",
+                  "host": ["{{identity_url}}"],
+                  "path": ["identityservice", "clients", "{{client_id}}"]
+                },
+                "description": "DELETE /identityservice/clients/{id} — marks the client as deactivated (204 No Content)."
+              }
+            },
+            {
+              "name": "Identity — Login (direct)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "if (pm.response.code === 200) {",
+                      "    const body = pm.response.json();",
+                      "    pm.collectionVariables.set('challenge_token', body.challengeToken);",
+                      "    console.log('challenge_token saved (direct):', body.challengeToken);",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"jean.tremblay@canbankx.ca\",\n  \"password\": \"SecurePass123!\"\n}"
+                },
+                "url": {
+                  "raw": "{{identity_url}}/identityservice/auth/login",
+                  "host": ["{{identity_url}}"],
+                  "path": ["identityservice", "auth", "login"]
+                },
+                "description": "Direct → POST /identityservice/auth/login\nSends a real 6-digit OTP to the client's email and returns a challengeToken.\nOpen MailHog (http://localhost:8025) to read the code."
+              }
+            },
+            {
+              "name": "Identity — Verify MFA (direct)",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "exec": [
+                      "// Auto-fetch the MFA OTP from MailHog matching the current challengeToken.",
+                      "const mailhogUrl = pm.collectionVariables.get('mailhog_url') || 'http://localhost:8025';",
+                      "const challengeToken = pm.collectionVariables.get('challenge_token');",
+                      "",
+                      "if (!challengeToken) {",
+                      "    console.warn('challenge_token is not set — run Identity Login (direct) first.');",
+                      "} else {",
+                      "    pm.sendRequest(mailhogUrl + '/api/v2/messages?limit=20', function(err, res) {",
+                      "        if (err) { console.error('MailHog fetch error:', err); return; }",
+                      "        const data = res.json();",
+                      "        if (!data || !data.items || data.items.length === 0) {",
+                      "            console.warn('No emails found in MailHog inbox.'); return;",
+                      "        }",
+                      "        const mfaEmail = data.items.find(function(m) {",
+                      "            const body = (m.Content && m.Content.Body) || '';",
+                      "            return body.includes(challengeToken);",
+                      "        });",
+                      "        if (!mfaEmail) {",
+                      "            console.warn('No MFA email found for challengeToken:', challengeToken); return;",
+                      "        }",
+                      "        const body = mfaEmail.Content.Body;",
+                      "        const otpMatch = body.match(/Your login code is:\\s*(\\d{6})/);",
+                      "        if (otpMatch) {",
+                      "            pm.collectionVariables.set('mfa_otp', otpMatch[1]);",
+                      "            console.log('MFA OTP auto-fetched from MailHog:', otpMatch[1]);",
+                      "        } else {",
+                      "            console.warn('Could not extract OTP from email body.');",
+                      "        }",
+                      "    });",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"challengeToken\": \"{{challenge_token}}\",\n  \"otpCode\": \"{{mfa_otp}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{identity_url}}/identityservice/auth/mfa",
+                  "host": ["{{identity_url}}"],
+                  "path": ["identityservice", "auth", "mfa"]
+                },
+                "description": "Direct → POST /identityservice/auth/mfa\nThe pre-request script auto-fetches the real OTP from MailHog using the challengeToken.\nThe token is single-use — re-login required if the wrong OTP is submitted."
+              }
+            }
+          ]
         },
         {
-          "name": "Identity — Deactivate Client (direct)",
-          "request": {
-            "method": "DELETE",
-            "header": [],
-            "url": {
-              "raw": "{{identity_url}}/identityservice/clients/{{client_id}}",
-              "host": ["{{identity_url}}"],
-              "path": ["identityservice", "clients", "{{client_id}}"]
+          "name": "── Account (direct :8082) ──",
+          "item": [
+            {
+              "name": "Account — Create (direct)",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"clientId\": \"{{client_id}}\",\n  \"accountType\": \"CHECKING\",\n  \"initialDeposit\": 1000.00\n}"
+                },
+                "url": {
+                  "raw": "{{account_url}}/accountservice/accounts",
+                  "host": ["{{account_url}}"],
+                  "path": ["accountservice", "accounts"]
+                }
+              }
+            },
+            {
+              "name": "Account — List All (direct)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{account_url}}/accountservice/accounts",
+                  "host": ["{{account_url}}"],
+                  "path": ["accountservice", "accounts"]
+                },
+                "description": "Omit clientId to list all accounts."
+              }
+            },
+            {
+              "name": "Account — List by Client (direct)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{account_url}}/accountservice/accounts?clientId={{client_id}}",
+                  "host": ["{{account_url}}"],
+                  "path": ["accountservice", "accounts"],
+                  "query": [{ "key": "clientId", "value": "{{client_id}}" }]
+                }
+              }
+            },
+            {
+              "name": "Account — Get by UUID (direct)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{account_url}}/accountservice/accounts/{{account_id}}",
+                  "host": ["{{account_url}}"],
+                  "path": ["accountservice", "accounts", "{{account_id}}"]
+                }
+              }
+            },
+            {
+              "name": "Account — Get by Account Number (direct)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{account_url}}/accountservice/accounts/number/{{account_number}}",
+                  "host": ["{{account_url}}"],
+                  "path": ["accountservice", "accounts", "number", "{{account_number}}"]
+                }
+              }
+            },
+            {
+              "name": "Account — Debit (internal, called by payment-service)",
+              "request": {
+                "method": "PATCH",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"amount\": 100.00,\n  \"transactionRef\": \"manual-test\"\n}"
+                },
+                "url": {
+                  "raw": "{{account_url}}/accountservice/accounts/number/{{account_number}}/debit",
+                  "host": ["{{account_url}}"],
+                  "path": ["accountservice", "accounts", "number", "{{account_number}}", "debit"]
+                },
+                "description": "PATCH /accountservice/accounts/number/{accountNumber}/debit — called internally by payment-service."
+              }
+            },
+            {
+              "name": "Account — Credit (internal, called by payment-service)",
+              "request": {
+                "method": "PATCH",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"amount\": 100.00,\n  \"transactionRef\": \"manual-test\"\n}"
+                },
+                "url": {
+                  "raw": "{{account_url}}/accountservice/accounts/number/{{account_number}}/credit",
+                  "host": ["{{account_url}}"],
+                  "path": ["accountservice", "accounts", "number", "{{account_number}}", "credit"]
+                },
+                "description": "PATCH /accountservice/accounts/number/{accountNumber}/credit — called internally by payment-service."
+              }
             }
-          }
+          ]
+        },
+        {
+          "name": "── Payment (direct :8083) ──",
+          "item": [
+            {
+              "name": "Payment — Submit Transaction (direct)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Content-Type", "value": "application/json" },
+                  { "key": "Idempotency-Key", "value": "direct-debit-001" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"sourceAccountNumber\": \"{{account_number}}\",\n  \"amount\": 25.00,\n  \"type\": \"DEBIT\"\n}"
+                },
+                "url": {
+                  "raw": "{{payment_url}}/paymentservice/transactions",
+                  "host": ["{{payment_url}}"],
+                  "path": ["paymentservice", "transactions"]
+                }
+              }
+            },
+            {
+              "name": "Payment — Get Transaction by ID (direct)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{payment_url}}/paymentservice/transactions/{{transaction_id}}",
+                  "host": ["{{payment_url}}"],
+                  "path": ["paymentservice", "transactions", "{{transaction_id}}"]
+                }
+              }
+            },
+            {
+              "name": "Payment — List All Transactions (direct)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{payment_url}}/paymentservice/transactions",
+                  "host": ["{{payment_url}}"],
+                  "path": ["paymentservice", "transactions"]
+                },
+                "description": "Omit accountNumber to list all transactions."
+              }
+            },
+            {
+              "name": "Payment — List by Account Number (direct)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{payment_url}}/paymentservice/transactions?accountNumber={{account_number}}",
+                  "host": ["{{payment_url}}"],
+                  "path": ["paymentservice", "transactions"],
+                  "query": [{ "key": "accountNumber", "value": "{{account_number}}" }]
+                }
+              }
+            },
+            {
+              "name": "Payment — Get Recent Transactions for Account (direct)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{payment_url}}/paymentservice/transactions/account/{{account_number}}/recent",
+                  "host": ["{{payment_url}}"],
+                  "path": ["paymentservice", "transactions", "account", "{{account_number}}", "recent"]
+                },
+                "description": "GET /paymentservice/transactions/account/{accountNumber}/recent\nReturns the last 10 transactions for the given account number.\nThis is the same backend used by the KrakenD /api/accounts/{id}/summary aggregated endpoint."
+              }
+            },
+            {
+              "name": "Payment — Get Audit Trail (direct)",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{payment_url}}/paymentservice/transactions/{{transaction_id}}/audit",
+                  "host": ["{{payment_url}}"],
+                  "path": ["paymentservice", "transactions", "{{transaction_id}}", "audit"]
+                },
+                "description": "GET /paymentservice/transactions/{id}/audit\nFull OSFI/FINTRAC audit log: INITIATED → DEBITED → CREDITED → COMPLETED/FAILED"
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "🩺 Health Checks (direct)",
+      "name": "Health & Observability (direct)",
       "item": [
         {
           "name": "Identity — Health",
@@ -461,6 +889,18 @@
           "request": { "method": "GET", "header": [], "url": { "raw": "{{payment_url}}/actuator/health", "host": ["{{payment_url}}"], "path": ["actuator", "health"] } }
         },
         {
+          "name": "Identity — Info",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{identity_url}}/actuator/info", "host": ["{{identity_url}}"], "path": ["actuator", "info"] } }
+        },
+        {
+          "name": "Account — Info",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{account_url}}/actuator/info", "host": ["{{account_url}}"], "path": ["actuator", "info"] } }
+        },
+        {
+          "name": "Payment — Info",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{payment_url}}/actuator/info", "host": ["{{payment_url}}"], "path": ["actuator", "info"] } }
+        },
+        {
           "name": "Identity — Prometheus",
           "request": { "method": "GET", "header": [], "url": { "raw": "{{identity_url}}/actuator/prometheus", "host": ["{{identity_url}}"], "path": ["actuator", "prometheus"] } }
         },
@@ -471,18 +911,63 @@
         {
           "name": "Payment — Prometheus",
           "request": { "method": "GET", "header": [], "url": { "raw": "{{payment_url}}/actuator/prometheus", "host": ["{{payment_url}}"], "path": ["actuator", "prometheus"] } }
+        },
+        {
+          "name": "Identity — Swagger UI",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{identity_url}}/swagger-ui.html", "host": ["{{identity_url}}"], "path": ["swagger-ui.html"] }, "description": "Opens Swagger UI for the identity-service. Navigate to this URL in a browser." }
+        },
+        {
+          "name": "Account — Swagger UI",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{account_url}}/swagger-ui.html", "host": ["{{account_url}}"], "path": ["swagger-ui.html"] }, "description": "Opens Swagger UI for the account-service." }
+        },
+        {
+          "name": "Payment — Swagger UI",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{payment_url}}/swagger-ui.html", "host": ["{{payment_url}}"], "path": ["swagger-ui.html"] }, "description": "Opens Swagger UI for the payment-service." }
         }
       ]
     },
     {
-      "name": "❌ Error Cases — via KrakenD",
+      "name": "Error Cases — via KrakenD",
       "item": [
+        {
+          "name": "400 — Transfer without Target Account",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "transfer-no-target-001" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sourceAccountNumber\": \"{{account_number}}\",\n  \"targetAccountNumber\": \"\",\n  \"amount\": 50.00,\n  \"type\": \"TRANSFER\"\n}"
+            },
+            "url": { "raw": "{{gateway_url}}/api/transactions", "host": ["{{gateway_url}}"], "path": ["api", "transactions"] },
+            "description": "Expected: 400 Bad Request — TRANSFER type submitted with an empty targetAccountNumber.\nServer message: 'TRANSFER transactions require a targetAccountNumber.'"
+          }
+        },
+        {
+          "name": "404 — Transfer to Non-Existent Account",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "transfer-bad-target-001" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sourceAccountNumber\": \"{{account_number}}\",\n  \"targetAccountNumber\": \"0000000000\",\n  \"amount\": 50.00,\n  \"type\": \"TRANSFER\"\n}"
+            },
+            "url": { "raw": "{{gateway_url}}/api/transactions", "host": ["{{gateway_url}}"], "path": ["api", "transactions"] },
+            "description": "Expected: 404 Not Found — target account '0000000000' does not exist.\nThe payment-service debits source, fails to credit target, compensates (re-credits source), marks transaction FAILED, and propagates the 404."
+          }
+        },
         {
           "name": "404 — Client Not Found",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{gateway_url}}/api/clients/00000000-0000-0000-0000-000000000000", "host": ["{{gateway_url}}"], "path": ["api", "clients", "00000000-0000-0000-0000-000000000000"] }
+            "url": { "raw": "{{gateway_url}}/api/clients/00000000-0000-0000-0000-000000000000", "host": ["{{gateway_url}}"], "path": ["api", "clients", "00000000-0000-0000-0000-000000000000"] },
+            "description": "Expected: 404 Not Found"
           }
         },
         {
@@ -491,7 +976,58 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"firstName\": \"\",\n  \"email\": \"not-an-email\"\n}" },
-            "url": { "raw": "{{gateway_url}}/api/clients", "host": ["{{gateway_url}}"], "path": ["api", "clients"] }
+            "url": { "raw": "{{gateway_url}}/api/clients", "host": ["{{gateway_url}}"], "path": ["api", "clients"] },
+            "description": "Expected: 400 Bad Request — bean validation failure"
+          }
+        },
+        {
+          "name": "409 — Register with Duplicate Email",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"Jean\",\n  \"lastName\": \"Tremblay\",\n  \"email\": \"jean.tremblay@canbankx.ca\",\n  \"password\": \"SecurePass123!\",\n  \"phoneNumber\": \"5141234567\",\n  \"address\": \"123 Rue Sainte-Catherine, Montréal, QC H3G 1M8\",\n  \"nas\": \"123456789\"\n}"
+            },
+            "url": { "raw": "{{gateway_url}}/api/clients", "host": ["{{gateway_url}}"], "path": ["api", "clients"] },
+            "description": "Run this after UC-01 — Register Client to test duplicate email rejection.\nExpected: 409 Conflict"
+          }
+        },
+        {
+          "name": "401 — Wrong Password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"jean.tremblay@canbankx.ca\",\n  \"password\": \"wrongpassword\"\n}" },
+            "url": { "raw": "{{gateway_url}}/api/auth/login", "host": ["{{gateway_url}}"], "path": ["api", "auth", "login"] },
+            "description": "Expected: 401 Unauthorized"
+          }
+        },
+        {
+          "name": "401 — Invalid OTP Code (verify email)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"otpCode\": \"000000\"\n}"
+            },
+            "url": {
+              "raw": "{{gateway_url}}/api/clients/{{client_id}}/verify",
+              "host": ["{{gateway_url}}"],
+              "path": ["api", "clients", "{{client_id}}", "verify"]
+            },
+            "description": "Expected: 401 Unauthorized — wrong OTP code for email verification"
+          }
+        },
+        {
+          "name": "401 — Invalid / Expired Challenge Token (MFA)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"challengeToken\": \"00000000-0000-0000-0000-000000000000\",\n  \"otpCode\": \"123456\"\n}" },
+            "url": { "raw": "{{gateway_url}}/api/auth/mfa", "host": ["{{gateway_url}}"], "path": ["api", "auth", "mfa"] },
+            "description": "Expected: 401 Unauthorized — non-existent or already-consumed challenge token"
           }
         },
         {
@@ -500,7 +1036,8 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"clientId\": \"{{client_id}}\",\n  \"accountType\": \"MORTGAGE\",\n  \"initialDeposit\": 0\n}" },
-            "url": { "raw": "{{gateway_url}}/api/accounts", "host": ["{{gateway_url}}"], "path": ["api", "accounts"] }
+            "url": { "raw": "{{gateway_url}}/api/accounts", "host": ["{{gateway_url}}"], "path": ["api", "accounts"] },
+            "description": "Expected: 400 Bad Request — MORTGAGE is not a valid AccountType"
           }
         },
         {
@@ -512,16 +1049,26 @@
               { "key": "Idempotency-Key", "value": "overdraft-test-001" }
             ],
             "body": { "mode": "raw", "raw": "{\n  \"sourceAccountNumber\": \"{{account_number}}\",\n  \"amount\": 9999999.00,\n  \"type\": \"DEBIT\"\n}" },
-            "url": { "raw": "{{gateway_url}}/api/transactions", "host": ["{{gateway_url}}"], "path": ["api", "transactions"] }
+            "url": { "raw": "{{gateway_url}}/api/transactions", "host": ["{{gateway_url}}"], "path": ["api", "transactions"] },
+            "description": "Expected: 422 Unprocessable Entity — account balance would go negative"
           }
         },
         {
-          "name": "401 — Wrong Password",
+          "name": "404 — Transaction Not Found",
           "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"email\": \"jean.tremblay@canbankx.ca\",\n  \"password\": \"wrongpassword\"\n}" },
-            "url": { "raw": "{{gateway_url}}/api/auth/login", "host": ["{{gateway_url}}"], "path": ["api", "auth", "login"] }
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway_url}}/api/transactions/00000000-0000-0000-0000-000000000000", "host": ["{{gateway_url}}"], "path": ["api", "transactions", "00000000-0000-0000-0000-000000000000"] },
+            "description": "Expected: 404 Not Found"
+          }
+        },
+        {
+          "name": "404 — Account Not Found",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway_url}}/api/accounts/00000000-0000-0000-0000-000000000000", "host": ["{{gateway_url}}"], "path": ["api", "accounts", "00000000-0000-0000-0000-000000000000"] },
+            "description": "Expected: 404 Not Found"
           }
         }
       ]

@@ -16,8 +16,11 @@ import java.util.UUID;
 @Table(
     name = "bank_transactions",
     indexes = {
-        @Index(name = "idx_idempotency_key", columnList = "idempotencyKey", unique = true),
-        @Index(name = "idx_source_account",  columnList = "sourceAccountNumber")
+        // columnList must use physical (snake_case) column names – Hibernate 6 / Spring Boot 4
+        @Index(name = "idx_idempotency_key",    columnList = "idempotency_key",     unique = true),
+        @Index(name = "idx_source_account",     columnList = "source_account_number"),
+        @Index(name = "idx_target_account",     columnList = "target_account_number"),
+        @Index(name = "idx_status_created",     columnList = "status, created_at")
     }
 )
 @EntityListeners(AuditingEntityListener.class)
@@ -32,7 +35,7 @@ public class BankTransaction {
     @Column(updatable = false, nullable = false)
     private UUID id;
 
-    @Column(unique = true, nullable = false)
+    @Column(nullable = false)   // uniqueness enforced by idx_idempotency_key index above
     private String idempotencyKey;
 
     @Column(nullable = false)

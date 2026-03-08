@@ -56,15 +56,17 @@ public class AccountController {
     @Operation(summary = "Debit an account")
     public ResponseEntity<AccountResponseDTO> debit(
             @PathVariable String accountNumber, @Valid @RequestBody BalanceUpdateDTO dto) {
+        accountService.debit(accountNumber, dto.getAmount());   // commits, releases row lock
         return ResponseEntity.ok(
-                new AccountResponseDTO(accountService.debit(accountNumber, dto.getAmount())));
+                new AccountResponseDTO(accountService.getAccountByNumber(accountNumber))); // fresh read-only tx
     }
 
     @PatchMapping("/number/{accountNumber}/credit")
     @Operation(summary = "Credit an account")
     public ResponseEntity<AccountResponseDTO> credit(
             @PathVariable String accountNumber, @Valid @RequestBody BalanceUpdateDTO dto) {
+        accountService.credit(accountNumber, dto.getAmount());  // commits, releases row lock
         return ResponseEntity.ok(
-                new AccountResponseDTO(accountService.credit(accountNumber, dto.getAmount())));
+                new AccountResponseDTO(accountService.getAccountByNumber(accountNumber))); // fresh read-only tx
     }
 }

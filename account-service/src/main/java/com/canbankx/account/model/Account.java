@@ -12,7 +12,13 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "accounts")
+@Table(
+    name = "accounts",
+    indexes = {
+        @Index(name = "idx_account_number", columnList = "accountNumber", unique = true),
+        @Index(name = "idx_client_id",      columnList = "clientId")
+    }
+)
 @EntityListeners(AuditingEntityListener.class)
 @Data
 @Builder

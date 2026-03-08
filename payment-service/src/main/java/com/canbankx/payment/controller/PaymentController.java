@@ -10,6 +10,8 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -22,6 +24,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 @Tag(name = "Transactions", description = "Payment and transfer operations")
 public class PaymentController {
+
+    private static final int MAX_PAGE_SIZE = 200;
 
     private final PaymentService paymentService;
     private final AuditLogRepository auditLogRepository;
@@ -50,12 +54,20 @@ public class PaymentController {
     }
 
     @GetMapping
-    @Operation(summary = "List transactions", description = "Pass accountNumber to filter, or omit for all")
+    @Operation(summary = "List transactions",
+               description = "Pass accountNumber to filter. Supports ?page=0&size=50 (max size=200).")
     public ResponseEntity<List<PaymentResponseDTO>> list(
-            @RequestParam(required = false) String accountNumber) {
+            @RequestParam(required = false) String accountNumber,
+            @RequestParam(defaultValue = "0")  int page,
+            @RequestParam(defaultValue = "50") int size) {
+
+        int clampedSize = Math.min(size, MAX_PAGE_SIZE);
+        PageRequest pageRequest = PageRequest.of(page, clampedSize,
+                Sort.by(Sort.Direction.DESC, "createdAt"));
+
         List<PaymentResponseDTO> result = (accountNumber != null
-                ? paymentService.getByAccountNumber(accountNumber)
-                : paymentService.getAll())
+                ? paymentService.getByAccountNumber(accountNumber, pageRequest)
+                : paymentService.getAll(pageRequest))
                 .stream().map(PaymentResponseDTO::new).toList();
         return ResponseEntity.ok(result);
     }
