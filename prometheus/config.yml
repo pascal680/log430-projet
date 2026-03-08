@@ -3,6 +3,11 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
+  # Each job groups primary + replica so the "Healthy Services" Grafana panel
+  # (up{job=~"identity-service|account-service|payment-service"} == 1) correctly
+  # counts 3 in non-LB mode and 6 in --profile lb mode.
+  # Replica targets that don't exist (non-LB) are simply marked DOWN by Prometheus
+  # and do not affect primary-instance scraping.
   - job_name: 'identity-service'
     metrics_path: '/actuator/prometheus'
     static_configs:
@@ -27,6 +32,7 @@ scrape_configs:
       - source_labels: [__address__]
         target_label: instance
 
+  # nginx-lb exporter – only exists with --profile lb (DOWN otherwise, harmless)
   - job_name: 'nginx-lb'
     static_configs:
       - targets: ['nginx-exporter:9113']
