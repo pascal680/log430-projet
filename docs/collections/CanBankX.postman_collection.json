@@ -486,7 +486,7 @@
       ]
     },
     {
-      "name": "🔧 Internal / Direct (not in Gateway)",
+      "name": "Internal / Direct (not in Gateway)",
       "description": "Endpoints not exposed by KrakenD. Hit the services directly for debugging or admin use.",
       "item": [
         {
