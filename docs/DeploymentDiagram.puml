@@ -1,0 +1,79 @@
+@startuml CanBankX — Vue Déploiement Docker
+
+node "Machine hôte (macOS / Linux)" {
+
+  node "Docker Engine" {
+
+    node "log430_projet-network (bridge)" {
+
+      component [KrakenD 2.7\n:8080] as GW
+
+      package "Mode LB  (--profile lb)" #LightYellow {
+        component [nginx-lb :8081/:8082/:8083] as NGLB
+        component [identity-service-2 :8081] as ID2
+        component [account-service-2  :8082] as ACC2
+        component [payment-service-2  :8083] as PAY2
+        component [nginx-exporter :9113] as NGEXP
+      }
+
+      component [identity-service :8081] as ID
+      component [account-service  :8082] as ACC
+      component [payment-service  :8083] as PAY
+      component [Frontend (Vite)\n:5173] as FE
+
+      database [MySQL 8.4 :3306\ndb_identity\ndb_account\ndb_payment] as DB
+      database [Redis 7 :6379] as Cache
+
+      component [Prometheus :9090] as PROM
+      component [Grafana :3000] as GRAF
+      component [MailHog :8025/:1025] as MAIL
+    }
+  }
+}
+
+actor "Développeur / Client" as Dev
+component [k6] as K6
+
+Dev  --> GW   : :8080  (API)
+Dev  --> FE   : :5173  (UI)
+Dev  --> PROM : :9090
+Dev  --> GRAF : :3000
+Dev  --> MAIL : :8025
+
+K6   --> GW
+
+GW   ..> NGLB : (LB mode)\nkrakend.json
+GW   --> ID   : (direct mode)\nkrakend-nolb.json
+GW   --> ACC
+GW   --> PAY
+
+NGLB --> ID   : least_conn
+NGLB --> ID2
+NGLB --> ACC
+NGLB --> ACC2
+NGLB --> PAY
+NGLB --> PAY2
+NGEXP --> NGLB : /nginx_status
+
+ID   --> DB
+ACC  --> DB
+PAY  --> DB
+ID   --> Cache
+PAY  --> Cache
+PAY  --> MAIL
+ID   --> MAIL
+
+note right of NGLB
+  nginx-all.conf
+  port 8081 → identity pool
+  port 8082 → account pool
+  port 8083 → payment pool
+  port 80   → health/metrics
+end note
+
+note right of DB
+  Schémas isolés par service
+  Grants MySQL restreints
+  (ADR-004)
+end note
+@enduml

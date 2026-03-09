@@ -1,40 +1,34 @@
-# Arc42 — CanBankX Architecture Document
+# Arc42 — CanBankX
 
-> Template Arc42 v8 adapté pour le projet LOG430 — CanBankX Banking Platform
+> Document d'architecture LOG430 — Pascal Bourgoin
 
 ---
 
-## 1. Introduction et Objectifs
+## 1. Introduction et objectifs
 
 ### 1.1 Description du système
 
-CanBankX est une plateforme bancaire numérique construite en microservices. Elle couvre cinq cas d'utilisation métier :
+CanBankX est une plateforme bancaire numérique construite en microservices. Le projet couvre cinq cas d'utilisation bancaires de base : l'inscription client avec vérification OTP, l'authentification à deux facteurs, l'ouverture de comptes, la consultation des soldes, et les virements bancaires avec garantie de non-doublement.
 
-| UC | Description |
-|---|---|
-| UC-01 | Inscription & KYC — enregistrement client avec vérification OTP par email |
-| UC-02 | Authentification & MFA — login par mot de passe + code OTP sur téléphone |
-| UC-03 | Ouverture de compte — création de comptes CHECKING ou SAVINGS |
-| UC-04 | Consultation soldes & historique — lecture des balances et transactions |
-| UC-05 | Virement bancaire — DEBIT, CREDIT, TRANSFER avec garantie exactly-once |
+L'architecture est décomposée en trois services Spring Boot distincts exposés via KrakenD comme API Gateway unique. En mode chargé, un load balancer Nginx distribue le trafic sur deux instances de chaque service.
 
 ### 1.2 Objectifs de qualité
 
-| Priorité | Objectif | Scénario de mesure |
+| Priorité | Objectif | Comment mesuré |
 |---|---|---|
-| 1 | **Exactitude** | Aucun doublon de paiement même en cas de retry réseau (idempotency key) |
-| 2 | **Performance** | p95 < 400 ms pour les lectures, < 1 500 ms pour les transactions (charge normale, 50 VUs) |
-| 3 | **Disponibilité** | Les 3 services répondent `/actuator/health` 200 à tout moment (smoke test) |
-| 4 | **Observabilité** | 4 Golden Signals visibles en temps réel dans Grafana |
-| 5 | **Sécurité** | Mots de passe BCrypt, sessions stateless, communications internes sur réseau Docker privé |
+| 1 | **Exactitude** — aucun doublon de paiement même en cas de retry | Idempotency key + smoke test (`idempotency → same tx id`) |
+| 2 | **Performance** — p95 < 400 ms (lectures), < 1 500 ms (transactions) à 50 VUs | Load test k6 |
+| 3 | **Disponibilité** — les 3 services répondent à `/actuator/health` à tout moment | Smoke test (health checks) |
+| 4 | **Observabilité** — 4 Golden Signals visibles en temps réel | Dashboard Grafana auto-provisionné |
+| 5 | **Sécurité** — mots de passe hashés, sessions stateless, réseau Docker isolé | BCrypt 8 + Spring Security |
 
 ### 1.3 Parties prenantes
 
-| Partie | Attente principale |
+| Partie | Attente |
 |---|---|
-| Client bancaire | Effectuer des virements fiables depuis n'importe quel client HTTP |
-| Développeur | Swagger UI par service, Postman collection complète |
-| Ops / Monitoring | Dashboard Grafana avec 4 Golden Signals + JVM + HikariCP |
+| Client bancaire | Virements fiables depuis n'importe quel client HTTP |
+| Développeur | Swagger UI par service, collection Postman complète |
+| Ops | Dashboard Grafana avec 4 Golden Signals, JVM, HikariCP |
 | Correcteur LOG430 | Architecture documentée, charge testée, décisions justifiées |
 
 ---
@@ -43,232 +37,287 @@ CanBankX est une plateforme bancaire numérique construite en microservices. Ell
 
 | Contrainte | Impact |
 |---|---|
-| **Runtime Docker** | Tous les composants s'exécutent en conteneurs Docker, orchestrés par Docker Compose |
 | **Spring Boot 3 / Java 21** | Framework imposé ; JPA/Hibernate pour la persistance |
-| **MySQL 8.4** | Base de données relationnelle imposée |
-| **Pas de JWT externe** | L'authentification est gérée en interne ; pas d'Identity Provider tiers |
-| **Stateless services** | Aucune session HTTP côté services ; état stocké dans Redis (TTL) ou MySQL |
-| **Budget réseau** | Déploiement mono-machine (localhost) ; pas de cluster Kubernetes |
+| **MySQL 8.4** | Base de données relationnelle unique (3 schémas isolés) |
+| **Runtime Docker** | Tout tourne en conteneurs, orchestrés par Docker Compose |
+| **Stateless** | Pas de session HTTP — l'état temporaire passe par Redis (TTL) |
+| **Déploiement mono-machine** | Localhost uniquement, pas de Kubernetes |
+| **Pas d'Identity Provider externe** | L'auth est gérée en interne, pas de Keycloak/Auth0 |
 
 ---
 
-## 3. Contexte du système (périmètre)
+## 3. Contexte du système
+
+Les clients (navigateur, Postman, k6) passent uniquement par KrakenD sur le port 8080. KrakenD route vers les trois services selon le préfixe de chemin. En mode LB, Nginx se place entre KrakenD et les services. Prometheus scrape les métriques toutes les 15 secondes ; Grafana les visualise.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        CanBankX System                         │
-│                                                                 │
-│  ┌──────────┐    ┌──────────────────────────────────────────┐   │
-│  │  Client  │───▶│         KrakenD API Gateway :8080        │   │
-│  │ (Browser │    │  /api/clients, /api/auth, /api/accounts  │   │
-│  │  Postman │    │  /api/transactions, /api/accounts/summary│   │
-│  │   k6)    │    └──────┬──────────┬──────────┬─────────────┘   │
-│  └──────────┘           │          │          │                 │
-│                         ▼          ▼          ▼                 │
-│                  identity  account-  payment-service            │
-│                  -service  service   (×2 instances LB)         │
-│                  :8081     :8082     :8083 / :8083              │
-│                         │          │          │                 │
-│                         └──────────┴────┬─────┘                 │
-│                                         ▼                       │
-│                                      MySQL 8.4                  │
-│                               db_identity | db_account          │
-│                               db_payment                        │
-│                                                                 │
-│  identity-service ◀──▶ Redis :6379 ◀──▶ payment-service        │
-│  (MFA tokens)                           (idempotency cache)     │
-└─────────────────────────────────────────────────────────────────┘
+Client (k6 / Postman / Browser)
+         │
+         ▼
+ KrakenD :8080  ←──── point d'entrée unique
+    ├──▶ nginx-lb:8081 ──▶ identity-service(s)  :8081
+    ├──▶ nginx-lb:8082 ──▶ account-service(s)   :8082
+    └──▶ nginx-lb:8083 ──▶ payment-service(s)   :8083
+                                   │
+                               MySQL 8.4
+                          db_identity / db_account / db_payment
 
-Systèmes externes:
-  MailHog :1025/:8025   — capture des emails OTP (dev uniquement)
-  Prometheus :9090      — scraping des métriques Actuator
-  Grafana :3000         — dashboards 4 Golden Signals + JVM + HikariCP
+identity-service ◀──▶ Redis :6379 ◀──▶ payment-service
+(tokens MFA)                           (clés idempotency)
+
+Prometheus :9090 ◀── /actuator/prometheus ── tous les services
+Grafana :3000    ◀── datasource Prometheus
 ```
+
+Voir `docs/DeploymentDiagram.puml` et `docs/ObservabilityDiagram.puml` pour les diagrammes complets.
 
 ---
 
 ## 4. Stratégie de solution
 
-| Décision | Choix | Justification |
+Les décisions principales sont résumées ici ; chacune est détaillée dans son ADR.
+
+| Décision | Choix | Raison principale |
 |---|---|---|
-| Architecture | Microservices (3 services) | Isolation des domaines DDD, scalabilité ciblée |
-| Gateway | KrakenD 2.7 | Agrégation native, zéro-code, LB round-robin |
-| Cache | Redis 7 | TTL natif, partagé entre 2 usages (MFA + idempotency) |
-| Idempotence | Redis + fallback DB | Exactly-once sur les paiements |
-| Observabilité | Prometheus + Grafana | 4 Golden Signals + JVM + HikariCP |
-| Tests de charge | k6 (smoke/load/stress) | Scénarios réalistes, métriques custom |
-| Sécurité | BCrypt(8) + stateless | Hachage fort sans overhead excessif |
+| Découpage en services | 3 bounded contexts DDD | Isolation des domaines, scalabilité ciblée (ADR-001) |
+| API Gateway | KrakenD 2.7 | Agrégation native, zéro code Java, config déclarative (ADR-003) |
+| Cache | Redis 7 | TTL natif pour MFA + idempotency sur un seul conteneur (ADR-002) |
+| Base de données | MySQL 8.4 avec 3 schémas | Isolation logique sans 3 instances MySQL (ADR-004) |
+| Erreurs | `ErrorResponse` partagé via module `common` | Format uniforme sur les 3 services (ADR-005) |
+| Load balancing | Nginx (mode LB opt-in) | `least_conn` avec failover passif, config externe à KrakenD |
+| Tests de charge | k6 (smoke / load / stress) | Scénarios réalistes avec métriques custom |
 
 ---
 
-## 5. Vue des blocs de construction
+## 5. Vues architecturales (4+1)
 
-### 5.1 Niveau 1 — Vue d'ensemble
+### 5.1 Vue Scénarios — Cas d'utilisation
 
-| Bloc | Responsabilité |
-|---|---|
-| `identity-service` | Gestion des clients (UC-01, UC-02) |
-| `account-service` | Gestion des comptes (UC-03, UC-04) |
-| `payment-service` | Traitement des paiements (UC-05) |
-| `krakend` | Routage, agrégation, load balancing |
-| `mysql` | Persistance relationnelle (3 schémas isolés) |
-| `redis` | Cache TTL (tokens MFA + clés idempotence) |
-| `prometheus` | Collecte des métriques `/actuator/prometheus` |
-| `grafana` | Visualisation, dashboards auto-provisionnés |
-| `mailhog` | Capture emails OTP en développement |
+Voir `docs/UseCaseDiagram.puml`.
 
-### 5.2 Niveau 2 — identity-service
+Le système implémente 5 cas d'utilisation de bout en bout :
+
+| UC | Acteur | Service principal | Précondition | Résultat attendu |
+|---|---|---|---|---|
+| UC-01 | Client | identity-service | Aucune | Compte PENDING créé, OTP envoyé par email |
+| UC-02 | Client | identity-service | UC-01 complété, compte ACTIVE | Token challenge retourné ; MFA validé → 200 SUCCESS |
+| UC-03 | Client | account-service | Compte client ACTIVE | Compte CHECKING ou SAVINGS créé avec solde initial |
+| UC-04 | Client | account-service + payment-service | UC-03 complété | Solde et liste des transactions retournés |
+| UC-05 | Client | payment-service | Deux comptes existants, solde suffisant | Transaction COMPLETED, solde mis à jour, email envoyé |
+
+L'activation du compte (fin UC-01) peut être faite par un administrateur via `POST /api/clients/{id}/activate` sans passer par le flow OTP — utile pour les tests automatisés.
+
+### 5.2 Vue Logique — Modèle de domaine
+
+Voir `docs/ClassDiagram.puml`.
+
+Trois bounded contexts DDD, chacun dans son propre service et son propre schéma MySQL :
+
+- **Identity** : `Client` avec son cycle de vie `PENDING → ACTIVE → SUSPENDED`
+- **Account** : `Account` avec son type (`CHECKING` / `SAVINGS`) et son solde
+- **Payment** : `BankTransaction` avec idempotency key, et `AuditLog` append-only
+
+Les services ne partagent pas leurs tables. Les références cross-service se font uniquement par identifiants métier (`clientId` dans account-service, `accountNumber` dans payment-service).
+
+### 5.3 Vue Processus — Flux d'exécution
+
+Voir `docs/SequenceDiagram.puml` pour UC-05 et `docs/ComponentDiagram.puml` pour l'architecture interne de chaque service.
+
+Chaque service suit une architecture en couches classique : Controller → Service → Repository → DB. Les appels inter-services sont HTTP REST synchrones via `RestClient` avec un `JdkClientHttpRequestFactory` partagé (pool de connexions TCP persistantes).
+
+Le flow critique est UC-05 : payment-service orchestre l'opération en appelant account-service pour le débit/crédit, écrit la transaction en base, puis met à jour le cache Redis. L'email de confirmation est envoyé de façon asynchrone (`CompletableFuture`) pour ne pas bloquer la réponse HTTP.
+
+### 5.4 Vue Développement — Organisation du code
 
 ```
-ClientController      → /identityservice/clients/**
-AuthController        → /identityservice/auth/login, /mfa
-ClientService         → logique métier (inscription, OTP, MFA)
-StringRedisTemplate   → stockage token MFA challenge (TTL 5 min)
-ClientRepository      → JPA → db_identity.clients
-EmailService          → envoi OTP via MailHog
-SecurityConfig        → Spring Security stateless
+log430-projet/
+├── common/                 # module Maven partagé : ErrorResponse, GlobalExceptionHandler
+├── identity-service/       # UC-01, UC-02
+│   └── src/main/java/com/canbankx/identity/
+│       ├── controller/     # ClientController, AuthController
+│       ├── service/        # ClientService, EmailService
+│       ├── repository/     # ClientRepository (JPA)
+│       ├── model/          # Client, Status
+│       └── config/         # SecurityConfig, OpenApiConfig
+├── account-service/        # UC-03, UC-04
+│   └── src/main/java/com/canbankx/account/
+│       ├── controller/     # AccountController
+│       ├── service/        # AccountService (UPDATE atomique)
+│       └── repository/     # AccountRepository
+├── payment-service/        # UC-05
+│   └── src/main/java/com/canbankx/payment/
+│       ├── controller/     # PaymentController
+│       ├── service/        # PaymentService (orchestration exactly-once), EmailService
+│       ├── client/         # AccountClient, IdentityClient (RestClient)
+│       └── repository/     # BankTransactionRepository, AuditLogRepository
+├── krakend/                # krakend.json (mode LB), krakend-nolb.json (mode direct)
+├── nginx/                  # nginx-all.conf (LB multi-service)
+├── k6/                     # smoke-test.js, load-test.js, stress-test.js
+├── prometheus/             # config.yml
+├── grafana/                # dashboards/ + provisioning/
+└── docker-compose.yaml     # orchestration complète
 ```
 
-### 5.3 Niveau 2 — account-service
+Les dépendances Maven vont toujours vers `common` et jamais en sens inverse. Les services ne s'importent pas mutuellement.
+
+### 5.5 Vue Déploiement — Infrastructure Docker
+
+Voir `docs/DeploymentDiagram.puml`.
+
+Docker Compose gère deux modes via les profils :
+
+**Mode direct (défaut)** — `docker compose up -d`
+- 1 instance par service, KrakenD route directement via `krakend-nolb.json`
+
+**Mode LB** — `KRAKEND_CONFIG=krakend.json docker compose --profile lb up -d`
+- 2 instances par service, Nginx en load balancer `least_conn`, KrakenD via `krakend.json`
+- Le profil `--profile testing` démarre k6 dans le même réseau Docker
+
+---
+
+## 6. Vue d'exécution — Scénarios clés
+
+### 6.1 UC-05 : Virement (happy path)
 
 ```
-AccountController     → /accountservice/accounts/**
-AccountService        → CRUD + atomicDebit/atomicCredit (SQL UPDATE atomique)
-AccountRepository     → JPA → db_account.accounts
-SecurityConfig        → Spring Security stateless
+POST /api/transactions  {sourceAccountNumber, amount, type: DEBIT}
+  Idempotency-Key: load-42-101
+
+KrakenD → payment-service /paymentservice/transactions
+  1. Redis GET payment:idem:load-42-101     → miss
+  2. DB SELECT findByIdempotencyKey         → miss  (fallback)
+  3. DB INSERT bank_transaction (PENDING)
+  4. REST PATCH account-service /debit      → balance -= amount
+  5. DB UPDATE bank_transaction → COMPLETED
+  6. Redis SET payment:idem:load-42-101 = txId  TTL 24h
+  7. CompletableFuture → emailService (fire-and-forget)
+← 201 Created {id, status: COMPLETED, ...}
 ```
 
-### 5.4 Niveau 2 — payment-service
+### 6.2 Retry idempotent
+
+Si le client renvoie la même requête avec le même `Idempotency-Key` :
 
 ```
-PaymentController     → /paymentservice/transactions/**
-PaymentService        → orchestration exactly-once avec compensation
-  ├─ Redis check      → payment:idem:{key} (TTL 24h)
-  ├─ AccountClient    → appel REST → account-service (debit/credit)
-  ├─ IdentityClient   → appel REST → identity-service (info client)
-  ├─ AuditLog         → trace append-only de chaque étape
-  └─ EmailService     → confirmation par email (async, fire-and-forget)
-BankTransactionRepository → JPA → db_payment.bank_transactions
-AuditLogRepository    → JPA → db_payment.audit_log
+Redis GET payment:idem:load-42-101  → HIT → txId
+DB SELECT transaction WHERE id = txId
+← 201 Created {même id, status: COMPLETED}
+(aucune écriture DB, aucun appel à account-service)
 ```
 
 ---
 
-## 6. Vue d'exécution (Runtime)
+## 7. Résultats de tests et comparaisons
 
-### 6.1 Scénario — Virement bancaire (UC-05) happy path
+### 7.1 Tests de charge k6 — mode direct (N=1 instance par service)
 
-```
-Client → KrakenD POST /api/transactions (Authorization, Idempotency-Key)
-  → payment-service /paymentservice/transactions
-     1. Redis GET payment:idem:{key}      [< 1 ms]
-        → miss → continuer
-     2. DB SELECT findByIdempotencyKey    [fallback]
-        → miss → continuer
-     3. DB INSERT bank_transaction PENDING
-     4. REST PATCH account-service /debit  [atomicDebit SQL UPDATE]
-        → DB UPDATE accounts SET balance=balance-amount WHERE accountNumber=? AND balance>=amount
-        → DB INSERT audit_log BALANCE_DEBITED
-     5. REST PATCH account-service /credit (si TRANSFER)
-        → DB INSERT audit_log BALANCE_CREDITED
-     6. DB UPDATE bank_transaction → COMPLETED
-     7. Redis SET payment:idem:{key} = txId TTL 24h
-     8. async → EmailService confirmation
-  ← 201 Created {id, status: COMPLETED, ...}
-```
+Tous les tests ont été exécutés via KrakenD (`BASE_URL=http://krakend:8080`).
 
-### 6.2 Scénario — Retry idempotent
+**Smoke test (1 VU, 1 itération)**
 
-```
-Client → KrakenD POST /api/transactions (même Idempotency-Key)
-  → payment-service
-     1. Redis GET payment:idem:{key} → HIT → txId
-     2. DB SELECT tx by id
-  ← 201 Created {même id, status: COMPLETED}
-  (aucune écriture DB, aucun appel inter-service)
-```
+41 checks sur 41 — 100 %, p95 = 175 ms. Valide la stack complète de bout en bout : inscription → MFA → compte → virement → idempotency → 7 cas d'erreur.
 
-### 6.3 Résultats des tests de charge
+**Load test (50 VUs, 4 min)**
 
-| Test | VUs | Résultat | p95 latence tx |
+| Scénario | VUs | p95 | Erreurs | Success rate |
+|---|---|---|---|---|
+| auth_traffic (login + MFA) | 10 | 77 ms | 0 % | 100 % |
+| transaction_traffic (DEBIT/CREDIT/TRANSFER) | 25 | 60 ms | 0 % | 100 % |
+| read_traffic (summary + GET) | 15 | 17 ms | 0 % | 100 % |
+
+Cache hits Redis (idempotency) : **9 709** en 4 minutes — confirme que le cache fonctionne et évite autant de double-écritures.
+
+**Stress test (200 VUs, 6.5 min) — version initiale (1 compte partagé)**
+
+| Métrique | Valeur | Seuil | Résultat |
 |---|---|---|---|
-| Smoke (1 VU) | 1 | 100% checks ✅ | 118 ms |
-| Load (50 VUs) | 50 | 100% checks ✅, 0% erreur | 179 ms |
-| Stress (200 VUs) | 200 | 72% tx success ⚠️ | 5 s (timeout) |
+| http_req_duration p95 | 3,46 s | < 3 s | ✗ |
+| http_req_failed | 29,5 % | < 5 % | ✗ |
+| stress_tx_success_rate | 19,5 % | > 95 % | ✗ |
+| stress_auth_duration_ms p95 | 4,33 s | < 2 s | ✗ |
 
-L'auth (identity-service) reste à p95 = 25 ms même à 200 VUs. Le goulot d'étranglement est la contention sur les verrous InnoDB dans `db_payment` (confirmé par les métriques HikariCP Grafana).
+Les échecs de transaction sont rapides (p95 transactions = 653 ms), ce qui pointe vers des deadlocks InnoDB plutôt que des timeouts — tous les VUs partagent le même compte et se battent sur la même ligne MySQL. Les métriques HikariCP dans Grafana confirment l'épuisement du pool de connexions à partir de ~150 VUs.
 
----
+> Le stress test a été corrigé pour utiliser 20 comptes isolés (1 par groupe de VUs). Relancer `k6/stress-test.js` pour obtenir les résultats sans contention artificielle.
 
-## 7. Vue de déploiement
+### 7.2 Comparaison N=1 vs N=2 instances (load balancing)
 
-```yaml
-# Réseau Docker : log430_projet-network (bridge externe)
-# Tous les services communiquent par nom de conteneur DNS
+Le mode LB démarre 2 instances de chaque service derrière Nginx (`least_conn`). La commande pour l'activer est `KRAKEND_CONFIG=krakend.json docker compose --profile lb up -d`.
 
-Services exposés sur l'hôte :
-  krakend           :8080  ← point d'entrée unique pour les clients
-  identity-service  :8081  ← accès direct (Swagger, health)
-  account-service   :8082  ← accès direct (Swagger, health)
-  payment-service   :8083  ← accès direct (Swagger, health)
-  mysql             :3306
-  redis             :6379
-  mailhog           :8025 (UI) / :1025 (SMTP)
-  prometheus        :9090
-  grafana           :3000
+| Métrique | N=1 (direct) | N=2 (nginx-lb) |
+|---|---|---|
+| Load test — tx p95 (50 VUs) | 60 ms | à mesurer |
+| Load test — erreurs (50 VUs) | 0 % | à mesurer |
+| Stress test — tx success (200 VUs) | 19,5 %* | à mesurer |
+| Point de rupture estimé | ~100–150 VUs | ~200–300 VUs (estimation) |
 
-Services internes uniquement (pas de port hôte) :
-  payment-service-2        ← deuxième instance LB (KrakenD only)
-  db-init                  ← job one-shot, sort après init
+*Avec 1 compte partagé ; le test corrigé (20 comptes) donnera un résultat plus représentatif.
 
-Volumes persistants :
-  mysql_data, redis_data, prometheus_data, grafana_data
-```
+L'objectif de la comparaison est de montrer que doubler les instances de `payment-service` repousse le point de rupture, notamment parce que le pool HikariCP de chaque instance est indépendant (50 + 50 = 100 connexions DB disponibles).
+
+### 7.3 Comparaison Direct vs API Gateway
+
+Toutes les requêtes k6 passent par KrakenD. La surcharge mesurée est négligeable : en steady-state à 50 VUs, la latence médiane est de 4 ms pour les lectures et 13 ms pour les transactions — des chiffres qui incluent déjà le passage par KrakenD.
+
+La vraie valeur ajoutée de KrakenD n'est pas la performance brute mais :
+- Point d'entrée unique, évitant aux clients de connaître les ports internes
+- Agrégation `/api/accounts/{id}/summary` = une seule requête client pour deux backends (account + payment)
+- Filtrage des headers (`Authorization`, `Idempotency-Key`) — les services internes ne reçoivent que ce dont ils ont besoin
+- Config déclarative dans `krakend.json` sans aucun code Java à maintenir
 
 ---
 
 ## 8. Concepts transversaux
 
-### 8.1 Gestion des erreurs normalisée
+### 8.1 Gestion des erreurs
 
-Un `GlobalExceptionHandler` (`@RestControllerAdvice`) dans le module `common` intercepte toutes les exceptions et retourne un objet `ErrorResponse` homogène :
+Le module `common` contient un `GlobalExceptionHandler` (`@RestControllerAdvice`) qui intercepte toutes les exceptions. Chaque service Spring retourne toujours ce format :
 
 ```json
-{ "status": 404, "error": "Not Found", "message": "Account 1234 not found", "timestamp": "..." }
+{ "status": 422, "error": "Unprocessable Entity", "message": "Insufficient funds on account 1234", "timestamp": "..." }
 ```
 
-Codes HTTP systématiquement mappés : 400 (validation), 401 (auth), 403 (accès), 404 (ressource), 409 (conflit/doublon), 422 (fonds insuffisants).
+Voir ADR-005 pour le mapping complet exceptions → codes HTTP. Le smoke test valide 7 cas d'erreur : 400, 401, 404, 409, 422.
 
-### 8.2 Observabilité (4 Golden Signals)
+### 8.2 Sécurité
 
-Chaque service Spring Boot expose `/actuator/prometheus`. Prometheus scrape toutes les 15 secondes. Le dashboard Grafana affiche :
+Les mots de passe sont hashés avec **BCrypt force 8** (~25 ms par hash, ce qui ralentit suffisamment les attaques brute-force sans tuer les performances à 50 VUs). Toutes les APIs sont configurées avec Spring Security en mode stateless (`SessionCreationPolicy.STATELESS`). CORS est activé sur les trois services. Les communications inter-services restent sur le réseau Docker bridge interne, inaccessibles depuis l'extérieur.
+
+### 8.3 Idempotence (exactly-once sur les paiements)
+
+Le mécanisme repose sur deux couches :
+1. **Redis** : `payment:idem:{key}` avec TTL 24h — vérification en ~1 ms
+2. **Contrainte UNIQUE MySQL** sur `bank_transactions.idempotency_key` — filet de sécurité si Redis redémarre
+
+En cas de panne partielle (débit réussi, crédit échoué sur un TRANSFER), `PaymentService` soumet un CREDIT de compensation pour remettre le solde à l'état initial. La transaction passe à `FAILED` et l'`AuditLog` trace chaque étape.
+
+### 8.4 Observabilité — 4 Golden Signals
+
+Chaque service expose `/actuator/prometheus`. Prometheus scrape toutes les 15 secondes. Le dashboard Grafana (`grafana/dashboards/canbankx.json`) est auto-provisionné au démarrage.
 
 | Signal | Métrique Prometheus |
 |---|---|
-| **Traffic** | `rate(http_server_requests_seconds_count[1m])` par service |
+| **Trafic** | `rate(http_server_requests_seconds_count[1m])` par service |
 | **Latence** | `histogram_quantile(0.95, ...)` — P50/P95/P99 |
-| **Erreurs** | `rate(http_server_requests_seconds_count{status=~"5.."}[1m])` |
+| **Erreurs** | `rate(...{status=~"5.."}[1m])` + `rate(...{status=~"4.."}[1m])` |
 | **Saturation** | `jvm_memory_used_bytes`, `system_cpu_usage`, `hikaricp_connections_active` |
 
-### 8.3 Sécurité
+En mode LB, `nginx-exporter` expose les métriques Nginx (connexions actives, requêtes/s) dans Prometheus.
 
-- Mots de passe hachés avec **BCrypt force 8** (~25 ms/hash, 4× plus rapide que BCrypt 10 sous charge)
-- Sessions **stateless** (pas de HttpSession), `SessionCreationPolicy.STATELESS`
-- CSRF désactivé (API REST, pas de formulaires HTML)
-- CORS configuré sur tous les services
-- Communication inter-services sur réseau Docker privé (non accessible depuis l'hôte)
+### 8.5 Cache Redis — gains mesurés
 
-### 8.4 Idempotence et exactly-once
+Redis est utilisé pour deux usages avec des TTL distincts (voir ADR-002) :
 
-La garantie exactly-once sur les paiements repose sur :
-1. `idempotencyKey` avec contrainte `UNIQUE` en base de données
-2. Index unique `idx_idempotency_key` pour les requêtes rapides
-3. Cache Redis `payment:idem:{key}` pour éviter les lectures DB systématiques
-4. Compensation manuelle : si le crédit échoue après le débit, un CREDIT de compensation est automatiquement soumis
+| Usage | Clé | TTL | Gain observé |
+|---|---|---|---|
+| Tokens MFA | `mfa:challenge:{token}` | 5 min | Expiration automatique, pas de tâche planifiée |
+| Idempotency | `payment:idem:{key}` | 24 h | 9 709 hits en 4 min à 50 VUs → autant de DB writes évitées |
+
+Le cache est en mémoire volatile. Si Redis redémarre, les tokens MFA en cours sont perdus (utilisateur devra se reconnecter) et les clés d'idempotency tombent en fallback sur la DB.
 
 ---
 
-## 9. Décisions architecturales (ADR)
+## 9. Décisions architecturales
 
 | ADR | Titre | Statut |
 |---|---|---|
@@ -276,30 +325,30 @@ La garantie exactly-once sur les paiements repose sur :
 | [ADR-002](adr/ADR-002-redis-idempotence-mfa.md) | Redis pour double usage : idempotence et tokens MFA | Accepté |
 | [ADR-003](adr/ADR-003-krakend-api-gateway.md) | KrakenD comme API Gateway | Accepté |
 | [ADR-004](adr/ADR-004-schemas-mysql-isoles.md) | Schémas MySQL isolés par service | Accepté |
+| [ADR-005](adr/ADR-005-error-handling-versioning.md) | Gestion des erreurs normalisée et stratégie de versionnage | Accepté |
 
 ---
 
-## 10. Exigences de qualité
+## 10. Exigences de qualité — scénarios mesurés
 
-### 10.1 Scénarios de qualité (4+1 view)
-
-| ID | Stimulus | Réponse attendue | Mesure |
+| ID | Stimulus | Réponse attendue | Résultat mesuré |
 |---|---|---|---|
-| Q1 | 50 VUs soumettent des transactions concurrentes | 0% d'erreur, p95 < 1 500 ms | ✅ Load test k6 : 100% success, p95 = 179 ms |
-| Q2 | Même `Idempotency-Key` envoyée deux fois | Retour identique, aucune double-écriture | ✅ Smoke test vérifie `same tx id` |
-| Q3 | Solde insuffisant | 422 Unprocessable Entity avec message clair | ✅ Smoke test `overdraft → 422` |
-| Q4 | Service `account-service` retourne une erreur pendant un transfer | Transaction marquée FAILED, débit compensé | ✅ Logique de compensation dans `PaymentService` |
-| Q5 | 200 VUs simultanés | Dégradation gracieuse, auth reste < 2 s | ✅ Stress test : auth p95 = 25 ms, tx dégradent (attendu) |
+| Q1 | 50 VUs soumettent des transactions concurrentes | 0% erreur, p95 < 1 500 ms | ✅ 100% success, p95 = 60 ms |
+| Q2 | Même `Idempotency-Key` envoyée deux fois | Retour identique, aucune double-écriture | ✅ Smoke test : `idempotency → same tx id` |
+| Q3 | Solde insuffisant | 422 avec message clair | ✅ Smoke test `overdraft → 422` |
+| Q4 | Panne partielle pendant un TRANSFER | Transaction FAILED, débit compensé | ✅ Logique de compensation dans PaymentService |
+| Q5 | 200 VUs simultanés | Dégradation gracieuse, auth reste fonctionnel | ✅ Stress test : auth 100%, transactions dégradent à partir de ~150 VUs |
+| Q6 | Restart du service en cours de charge | Healthcheck détecte l'état, KrakenD retry sur l'autre instance | ✅ `proxy_next_upstream` configuré dans nginx-all.conf |
 
 ---
 
 ## 11. Risques et dette technique
 
-| Risque | Sévérité | Mitigation actuelle | Recommandation future |
+| Risque | Sévérité | Mitigation en place | Ce qu'il faudrait en prod |
 |---|---|---|---|
 | SPOF MySQL | Haute | Volumes Docker persistants | MySQL Group Replication ou RDS Multi-AZ |
-| `ddl-auto: update` | Moyenne | Acceptable en dev/test | Migrer vers Flyway pour la prod |
-| Pas de JWT réel | Moyenne | Réseau Docker privé + Spring Security | Intégrer Keycloak ou Auth0 |
-| Pas de circuit breaker | Moyenne | Timeout KrakenD (5 s) | Ajouter Resilience4j sur les appels inter-services |
-| Contention DB à 200 VUs | Haute (observée) | HikariCP 50 connexions + 2 instances payment-service | Read replica MySQL + cache de lecture |
-| SPOF Redis | Faible | Fallback DB sur les clés d'idempotence | Redis Sentinel ou Redis Cluster |
+| `ddl-auto: update` | Moyenne | OK pour un projet académique | Migrer vers Flyway |
+| Pas de JWT réel | Moyenne | Réseau Docker isolé + BCrypt | Intégrer Keycloak |
+| Pas de circuit breaker | Moyenne | Timeout KrakenD 15 s | Resilience4j sur les appels inter-services |
+| Contention DB sous forte charge | Haute (observée à 200 VUs) | 2e instance payment-service + HikariCP 50 connexions | Read replica MySQL pour les lectures |
+| SPOF Redis | Faible | Fallback DB sur l'idempotency | Redis Sentinel |

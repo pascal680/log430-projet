@@ -1,22 +1,64 @@
-@startuml
-node "Docker Infrastructure" {
-    component [KrakenD Gateway] as GW #LightBlue
+@startuml CanBankX — Vue Observabilité
+skinparam componentStyle rectangle
 
-    package "Java Spring Boot App" {
-        component [API REST] as API
-        component [Service Métier] as Logic
-        component [Spring Actuator] as Actuator #Pink
+node "Machine hôte" {
+  node "Docker Network" {
+
+    package "Entrée" {
+      component [KrakenD\n:8080] as GW
+      component [nginx-lb\n:8081/:8082/:8083\n(mode LB)] as NGLB
     }
 
-    database "MySQL" as DB
-    database "Redis" as Cache
-    component [Prometheus] as Prom #Orange
+    package "Microservices" {
+      component [identity-service\n:8081] as ID
+      component [identity-service-2\n:8081] as ID2
+      component [account-service\n:8082] as ACC
+      component [account-service-2\n:8082] as ACC2
+      component [payment-service\n:8083] as PAY
+      component [payment-service-2\n:8083] as PAY2
+    }
+
+    database [MySQL 8.4\ndb_identity / db_account / db_payment] as DB
+    database [Redis 7\nMFA tokens + idempotency] as Cache
+
+    package "Observabilité" {
+      component [Prometheus\n:9090] as PROM
+      component [Grafana\n:3000] as GRAF
+      component [nginx-exporter\n:9113] as NGEXP
+    }
+  }
 }
 
-[Locust] --> GW : Tests de charge
-GW --> API : Routage / Load Balancing
-API --> Logic
-Logic --> DB
-Logic --> Cache
-Actuator --> Prom : Expose métriques [cite: 66]
+component [k6\n(smoke / load / stress)] as K6
+
+K6 --> GW : tests de charge
+
+GW --> NGLB : (mode LB)
+GW --> ID  : (mode direct)
+GW --> ACC
+GW --> PAY
+
+NGLB --> ID
+NGLB --> ID2
+NGLB --> ACC
+NGLB --> ACC2
+NGLB --> PAY
+NGLB --> PAY2
+
+ID  --> DB
+ACC --> DB
+PAY --> DB
+ID  --> Cache : MFA tokens
+PAY --> Cache : clés idempotency
+
+ID   --> PROM : /actuator/prometheus
+ID2  --> PROM
+ACC  --> PROM : /actuator/prometheus
+ACC2 --> PROM
+PAY  --> PROM : /actuator/prometheus
+PAY2 --> PROM
+NGEXP --> NGLB : /nginx_status
+NGEXP --> PROM
+
+PROM --> GRAF : datasource Prometheus
 @enduml

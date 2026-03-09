@@ -13,56 +13,59 @@ Three test files targeting the most critical paths through the KrakenD API Gatew
 ## ⚠️ Critical: LB mode vs no-LB mode
 
 **You MUST start the stack in the same mode you plan to test.**
-Mixing modes causes 100% transaction failures because KrakenD routes payments to
-`nginx-payment-lb:80` when using `krakend.json`, but that container only exists in LB mode.
 
-### Mode A — No load balancer (default, single payment-service)
+### Mode A — No load balancer (default, single instance per service)
 
-```cmd
+```zsh
 docker compose up -d
-docker compose run --rm k6 run /tests/load-test.js
+docker compose --profile testing run --rm k6 run /tests/smoke-test.js
+docker compose --profile testing run --rm k6 run /tests/load-test.js
 ```
 
-KrakenD uses `krakend-nolb.json` → routes directly to `payment-service:8083`.
+KrakenD uses `krakend-nolb.json` → routes directly to each service container.
 
-### Mode B — With Nginx load balancer (2× payment-service replicas)
+### Mode B — With Nginx load balancer (2× replicas per service)
 
-```cmd
-set KRAKEND_CONFIG=krakend.json
-docker compose --profile lb up -d
-docker compose run --rm k6 run /tests/load-test.js
+```zsh
+KRAKEND_CONFIG=krakend.json docker compose --profile lb up -d
+docker compose --profile lb --profile testing run --rm k6 run /tests/smoke-test.js
+docker compose --profile lb --profile testing run --rm k6 run /tests/load-test.js
 ```
 
-KrakenD uses `krakend.json` → routes through `nginx-payment-lb:80` → `payment-service` + `payment-service-2`.
+KrakenD uses `krakend.json` → routes through `nginx-lb` on ports 8081/8082/8083
+→ load-balanced across `identity-service` + `identity-service-2`, etc.
 
-> **If transactions fail with P95 < 2ms and 0% success rate**, you are in the wrong mode:
-> `krakend.json` is loaded but `nginx-payment-lb` is not running (or vice versa).
+> **If transactions fail with P95 < 2 ms and 0 % success rate**, you are in the wrong mode:
+> `krakend.json` is active but `nginx-lb` is not running (or vice versa).
 > Run `docker compose ps` to check, then restart in the correct mode.
 
 ---
 
-
 ## Prerequisites
 
-Your stack must be running before you run any test:
+Your stack must be running and healthy before you run any test:
 
-```cmd
-docker compose up -d
+```zsh
+docker compose ps
 ```
 
-Wait until all services are healthy (check with `docker compose ps`).
+All services should show `healthy`. If any show `starting`, wait and check again.
 
 ---
 
 ## Running Tests — Docker (recommended, no install needed)
 
-k6 is already wired into `docker-compose.yaml` under the `testing` profile.
+k6 is wired into `docker-compose.yaml` under the `testing` profile.
 It joins the same Docker network as the services, so it reaches them by container name.
 
 ### Step 1 — Smoke test (always run this first)
 
-```cmd
-docker compose run --rm k6 run /tests/smoke-test.js
+```zsh
+# No-LB mode
+docker compose --profile testing run --rm k6 run /tests/smoke-test.js
+
+# LB mode
+docker compose --profile lb --profile testing run --rm k6 run /tests/smoke-test.js
 ```
 
 Every single check must be green (100 %) before you run a load test.
@@ -70,16 +73,16 @@ If anything fails here, your stack has a bug — fix it before proceeding.
 
 ### Step 2 — Load test (normal traffic)
 
-```cmd
-docker compose run --rm k6 run /tests/load-test.js
+```zsh
+docker compose --profile testing run --rm k6 run /tests/load-test.js
 ```
 
 50 VUs spread across 3 concurrent scenarios for ~4 minutes.
 
 ### Step 3 — Stress test (find the ceiling)
 
-```cmd
-docker compose run --rm k6 run /tests/stress-test.js
+```zsh
+docker compose --profile testing run --rm k6 run /tests/stress-test.js
 ```
 
 Ramps up to 200 VUs to find where the system starts degrading.
@@ -90,23 +93,18 @@ Ramps up to 200 VUs to find where the system starts degrading.
 
 If you prefer to run k6 directly on your machine against `localhost:8080`:
 
-### Install k6 on Windows
+### Install k6 on macOS
 
-```cmd
-winget install k6 --source winget
-```
-
-Or with Chocolatey:
-```cmd
-choco install k6
+```zsh
+brew install k6
 ```
 
 ### Run against localhost
 
-```cmd
-k6 run k6\smoke-test.js
-k6 run k6\load-test.js
-k6 run k6\stress-test.js
+```zsh
+k6 run k6/smoke-test.js
+k6 run k6/load-test.js
+k6 run k6/stress-test.js
 ```
 
 ---

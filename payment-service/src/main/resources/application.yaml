@@ -24,7 +24,7 @@ spring:
         dialect: org.hibernate.dialect.MySQLDialect
         format_sql: true
 
-  # ── Redis (idempotency cache – payment-service ONLY) ─────────────────────
+  # Redis — clés d'idempotency (payment:idem:*, TTL 24h)
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -36,7 +36,7 @@ spring:
           min-idle: 5
           max-wait: 2000ms
 
-  # ── Mail (payment confirmation emails) ───────────────────────────────────
+  # Mail — confirmation emails après chaque transaction
   mail:
     host: ${MAIL_HOST:localhost}
     port: ${MAIL_PORT:1025}
@@ -56,14 +56,14 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
-# ── Inter-service HTTP client configuration ───────────────────────────────────
+# URLs des services internes (injectées via docker-compose env vars)
 services:
   account:
     url: ${ACCOUNT_SERVICE_URL:http://account-service:8082}
   identity:
     url: ${IDENTITY_SERVICE_URL:http://identity-service:8081}
 
-# ── Actuator / Observability (4 Golden Signals) ──────────────────────────────
+# Actuator — expose /health, /prometheus, /metrics
 management:
   endpoints:
     web:

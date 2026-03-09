@@ -1,10 +1,10 @@
 /**
- * CanBankX – k6 Load Test
+ * CanBankX — k6 Load Test
  *
- * Three concurrent scenarios that model real banking traffic:
- *   auth_traffic        (20% of VUs)  – Login → MFA flow
- *   transaction_traffic (50% of VUs)  – DEBIT / CREDIT / TRANSFER + idempotency
- *   read_traffic        (30% of VUs)  – Account summary, transaction list, account lookup
+ * Three concurrent scenarios modelling real banking traffic:
+ *   auth_traffic        (20% of VUs) — Login + MFA flow
+ *   transaction_traffic (50% of VUs) — DEBIT / CREDIT / TRANSFER + idempotency check
+ *   read_traffic        (30% of VUs) — Account summary, transaction list, account lookup
  *
  * Usage:
  *   k6 run k6/load-test.js
@@ -15,22 +15,22 @@ import http  from 'k6/http';
 import { check, sleep, group } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
-// ── Custom metrics ────────────────────────────────────────────────────────────
+// custom metrics
 const txSuccessRate  = new Rate('transaction_success_rate');
 const txDuration     = new Trend('transaction_duration_ms',  true);
 const authDuration   = new Trend('auth_duration_ms',         true);
 const readDuration   = new Trend('read_duration_ms',         true);
 const idemHits       = new Counter('idempotency_cache_hits');
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// Config
 const BASE_URL    = __ENV.BASE_URL    || 'http://localhost:8080';
 const MAILHOG_URL = __ENV.MAILHOG_URL || 'http://localhost:8025';
 const HEADERS     = { 'Content-Type': 'application/json' };
 
 /**
- * Fetches the real MFA OTP from MailHog by searching for the unique
- * challengeToken embedded in the email body. Safe for concurrent VUs
- * sharing the same account — each challengeToken is unique per login call.
+ * Fetches the MFA OTP from MailHog by searching for the unique challengeToken
+ * embedded in the email body. Each challengeToken is unique per login call so
+ * concurrent VUs sharing the same account don't pick up each other's codes.
  */
 function getMfaOtp(challengeToken) {
   const res = http.get(
@@ -49,7 +49,7 @@ function getMfaOtp(challengeToken) {
   }
 }
 
-// ── Scenarios + thresholds ────────────────────────────────────────────────────
+// Scenarios + thresholds
 export const options = {
   scenarios: {
     // 20 % — authentication traffic (login + MFA)
@@ -91,32 +91,27 @@ export const options = {
   },
 
   thresholds: {
-    // ── Global ───────────────────────────────────────────────────────────────
-    http_req_failed:   ['rate<0.01'],    // < 1 % HTTP errors overall
-    http_req_duration: ['p(95)<1500'],   // p95 < 1.5 s overall
+    http_req_failed:   ['rate<0.01'],
+    http_req_duration: ['p(95)<1500'],
 
-    // ── Per scenario ─────────────────────────────────────────────────────────
-    'http_req_duration{scenario:auth_traffic}':        ['p(95)<800'],   // login must be fast
-    'http_req_duration{scenario:transaction_traffic}': ['p(95)<1500'],  // Redis + 2 DB writes + email
-    'http_req_duration{scenario:read_traffic}':        ['p(95)<400'],   // reads must be very fast
+    'http_req_duration{scenario:auth_traffic}':        ['p(95)<800'],
+    'http_req_duration{scenario:transaction_traffic}': ['p(95)<1500'],
+    'http_req_duration{scenario:read_traffic}':        ['p(95)<400'],
 
-    // ── Custom metrics ───────────────────────────────────────────────────────
-    transaction_success_rate: ['rate>0.99'],  // 99 % of transactions must succeed
+    transaction_success_rate: ['rate>0.99'],
     transaction_duration_ms:  ['p(95)<1500'],
     auth_duration_ms:         ['p(95)<800'],
     read_duration_ms:         ['p(95)<400'],
   },
 };
 
-// ── Setup: runs ONCE before any VU starts ─────────────────────────────────────
-// Creates one shared client + two accounts that all VUs will reuse.
+// Runs once before VUs start — creates a shared client + 2 accounts for all scenarios
 export function setup() {
   const ts       = Date.now();
   const email    = `loadtest_${ts}@canbankx.ca`;
   const password = 'LoadTest123!';
-  const nas      = String(ts).slice(-9);  // 9-digit NAS
+  const nas      = String(ts).slice(-9);
 
-  // 1. Register client
   const regRes = http.post(
     `${BASE_URL}/api/clients`,
     JSON.stringify({
@@ -134,18 +129,12 @@ export function setup() {
   }
   const clientId = regRes.json('id');
 
-  // 2. Activate (admin bypass — no OTP email needed in load tests)
-  const actRes = http.post(
-    `${BASE_URL}/api/clients/${clientId}/activate`,
-    null,
-    { headers: HEADERS },
-  );
+  const actRes = http.post(`${BASE_URL}/api/clients/${clientId}/activate`, null, { headers: HEADERS });
   if (actRes.status !== 200) {
     console.error(`[setup] activate failed: ${actRes.status} — ${actRes.body}`);
     return null;
   }
 
-  // 3. Create CHECKING account with a large initial deposit so DEBITs never run dry
   const checkRes = http.post(
     `${BASE_URL}/api/accounts`,
     JSON.stringify({ clientId, accountType: 'CHECKING', initialDeposit: 10000000.00 }),
@@ -158,7 +147,6 @@ export function setup() {
   const accountNumber = checkRes.json('accountNumber');
   const accountId     = checkRes.json('id');
 
-  // 4. Create SAVINGS account (used as the TRANSFER target)
   const savRes = http.post(
     `${BASE_URL}/api/accounts`,
     JSON.stringify({ clientId, accountType: 'SAVINGS', initialDeposit: 10000000.00 }),
@@ -170,9 +158,8 @@ export function setup() {
   }
   const savingsNumber = savRes.json('accountNumber');
 
-  // 5. Seed one transaction so the read scenario has a stable transaction ID to query.
-  //    Using the single-record GET endpoint avoids the unbounded list response growing
-  //    to gigabytes as the test creates thousands of transactions.
+  // Seed one transaction so the read scenario has a stable ID to query (avoids
+  // fetching the unbounded list which grows to GB over a long test run)
   const seedRes = http.post(
     `${BASE_URL}/api/transactions`,
     JSON.stringify({ sourceAccountNumber: accountNumber, amount: 1.00, type: 'CREDIT' }),
@@ -180,13 +167,10 @@ export function setup() {
   );
   const transactionId = seedRes.status === 201 ? seedRes.json('id') : null;
 
-  console.log(
-    `[setup] ✅  client=${clientId}  checking=${accountNumber}  savings=${savingsNumber}  seedTx=${transactionId}`,
-  );
+  console.log(`[setup] ✅  client=${clientId}  checking=${accountNumber}  savings=${savingsNumber}  seedTx=${transactionId}`);
   return { email, password, clientId, accountNumber, accountId, savingsNumber, transactionId };
 }
 
-// ── Scenario 1: Authentication ────────────────────────────────────────────────
 export function authScenario(data) {
   if (!data) { sleep(1); return; }
 
@@ -200,10 +184,8 @@ export function authScenario(data) {
     authDuration.add(Date.now() - t0);
 
     const ok = check(loginRes, {
-      'login → 200':             r => r.status === 200,
-      'login → has challengeToken': r => {
-        try { return !!r.json('challengeToken'); } catch { return false; }
-      },
+      'login → 200':                r => r.status === 200,
+      'login → has challengeToken': r => { try { return !!r.json('challengeToken'); } catch { return false; } },
     });
     if (!ok) { sleep(1); return; }
 
@@ -217,24 +199,18 @@ export function authScenario(data) {
     );
     check(mfaRes, {
       'MFA → 200':     r => r.status === 200,
-      'MFA → SUCCESS': r => {
-        try { return r.json('status') === 'SUCCESS'; } catch { return false; }
-      },
+      'MFA → SUCCESS': r => { try { return r.json('status') === 'SUCCESS'; } catch { return false; } },
     });
   });
 
   sleep(1);
 }
 
-// ── Scenario 2: Transaction processing ───────────────────────────────────────
 export function transactionScenario(data) {
   if (!data) { sleep(1); return; }
 
-  // Round-robin through transaction types for a realistic distribution
-  const types = ['DEBIT', 'CREDIT', 'TRANSFER'];
-  const type  = types[__ITER % types.length];
-
-  // Unique idempotency key per VU + iteration
+  const types   = ['DEBIT', 'CREDIT', 'TRANSFER'];
+  const type    = types[__ITER % types.length];
   const idemKey = `load-${__VU}-${__ITER}`;
 
   const body = {
@@ -254,17 +230,13 @@ export function transactionScenario(data) {
     txDuration.add(Date.now() - t0);
 
     const ok = check(res, {
-      'transaction → 201': r => r.status === 201,
-      'transaction → has id': r => {
-        try { return !!r.json('id'); } catch { return false; }
-      },
-      'transaction → COMPLETED': r => {
-        try { return r.json('status') === 'COMPLETED'; } catch { return false; }
-      },
+      'transaction → 201':       r => r.status === 201,
+      'transaction → has id':    r => { try { return !!r.json('id'); } catch { return false; } },
+      'transaction → COMPLETED': r => { try { return r.json('status') === 'COMPLETED'; } catch { return false; } },
     });
     txSuccessRate.add(ok ? 1 : 0);
 
-    // ── Idempotency check: replaying the same key must return the identical tx ──
+    // Replay the same key — must return the identical transaction (exactly-once)
     const idemRes = http.post(
       `${BASE_URL}/api/transactions`,
       JSON.stringify(body),
@@ -273,9 +245,7 @@ export function transactionScenario(data) {
     const firstId = (() => { try { return res.json('id'); } catch { return null; } })();
     const idemOk  = check(idemRes, {
       'idempotency → 201':        r => r.status === 201,
-      'idempotency → same tx id': r => {
-        try { return r.json('id') === firstId; } catch { return false; }
-      },
+      'idempotency → same tx id': r => { try { return r.json('id') === firstId; } catch { return false; } },
     });
     if (idemOk) idemHits.add(1);
   });
@@ -283,37 +253,24 @@ export function transactionScenario(data) {
   sleep(0.5);
 }
 
-// ── Scenario 3: Read operations ───────────────────────────────────────────────
 export function readScenario(data) {
   if (!data) { sleep(1); return; }
 
   group('Read / Account Summary', () => {
-    // KrakenD aggregates account-service + payment-service in one request
+    // KrakenD aggregates account-service + payment-service in a single upstream call
     const t0  = Date.now();
-    const res = http.get(
-      `${BASE_URL}/api/accounts/${data.accountNumber}/summary`,
-      { headers: HEADERS },
-    );
+    const res = http.get(`${BASE_URL}/api/accounts/${data.accountNumber}/summary`, { headers: HEADERS });
     readDuration.add(Date.now() - t0);
     check(res, {
       'summary → 200':         r => r.status === 200,
-      'summary → has account': r => {
-        try { return !!r.json('account'); } catch { return false; }
-      },
+      'summary → has account': r => { try { return !!r.json('account'); } catch { return false; } },
     });
   });
 
   group('Read / Transaction by ID', () => {
-    // Use the stable seed transaction from setup instead of the list endpoint.
-    // GET /api/transactions/list returns ALL transactions for the account with no
-    // pagination — it grew to 2.9 GB during the load test as thousands of records
-    // accumulated. The single-record GET endpoint is a realistic read pattern anyway.
     if (!data.transactionId) { return; }
     const t0  = Date.now();
-    const res = http.get(
-      `${BASE_URL}/api/transactions/${data.transactionId}`,
-      { headers: HEADERS },
-    );
+    const res = http.get(`${BASE_URL}/api/transactions/${data.transactionId}`, { headers: HEADERS });
     readDuration.add(Date.now() - t0);
     check(res, {
       'tx by id → 200':    r => r.status === 200,
@@ -323,25 +280,17 @@ export function readScenario(data) {
 
   group('Read / Get Account by ID', () => {
     const t0  = Date.now();
-    const res = http.get(
-      `${BASE_URL}/api/accounts/${data.accountId}`,
-      { headers: HEADERS },
-    );
+    const res = http.get(`${BASE_URL}/api/accounts/${data.accountId}`, { headers: HEADERS });
     readDuration.add(Date.now() - t0);
     check(res, {
-      'account → 200':              r => r.status === 200,
-      'account → has accountNumber': r => {
-        try { return !!r.json('accountNumber'); } catch { return false; }
-      },
+      'account → 200':               r => r.status === 200,
+      'account → has accountNumber': r => { try { return !!r.json('accountNumber'); } catch { return false; } },
     });
   });
 
   group('Read / List Accounts by Client', () => {
     const t0  = Date.now();
-    const res = http.get(
-      `${BASE_URL}/api/accounts/list?clientId=${data.clientId}`,
-      { headers: HEADERS },
-    );
+    const res = http.get(`${BASE_URL}/api/accounts/list?clientId=${data.clientId}`, { headers: HEADERS });
     readDuration.add(Date.now() - t0);
     check(res, { 'account list → 200': r => r.status === 200 });
   });
@@ -349,9 +298,8 @@ export function readScenario(data) {
   sleep(1);
 }
 
-// ── Teardown: logs final summary ──────────────────────────────────────────────
 export function teardown(data) {
   if (data) {
-    console.log(`[teardown] Test accounts — checking: ${data.accountNumber}  savings: ${data.savingsNumber}`);
+    console.log(`[teardown] checking: ${data.accountNumber}  savings: ${data.savingsNumber}`);
   }
 }

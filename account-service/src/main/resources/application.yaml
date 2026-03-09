@@ -35,7 +35,7 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
-# ── Actuator / Observability (4 Golden Signals) ──────────────────────────────
+# Actuator — expose /health, /prometheus, /metrics
 management:
   endpoints:
     web:

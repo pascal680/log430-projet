@@ -1,18 +1,25 @@
-@startuml
+@startuml CanBankX — Cas d'utilisation
 left to right direction
-actor "Client" as C
 
-rectangle CanBankX {
-  usecase "UC-01: Inscription & KYC" as UC01
-  usecase "UC-02: Authentification & MFA" as UC02
-  usecase "UC-03: Ouverture de compte" as UC03
-  usecase "UC-04: Consultation Soldes/Historique" as UC04
-  usecase "UC-05: Virement Bancaire" as UC05
+actor "Client" as C
+actor "Administrateur" as A
+
+rectangle "CanBankX" {
+  usecase "UC-01\nInscription & KYC" as UC01
+  usecase "UC-02\nAuthentification MFA" as UC02
+  usecase "UC-03\nOuverture de compte" as UC03
+  usecase "UC-04\nConsultation solde\net historique" as UC04
+  usecase "UC-05\nVirement bancaire" as UC05
 }
 
-C --> UC01 : Fournit données (NAS, adresse) [cite: 83]
-C --> UC02 : OTP / MFA [cite: 94]
-C --> UC03 : Sélection type compte [cite: 102]
-C --> UC04 : Sélection compte [cite: 111]
-C --> UC05 : Saisie montant/bénéficiaire [cite: 119]
+C --> UC01 : fournit NAS, adresse, email
+C --> UC02 : login + code OTP
+C --> UC03 : choisit CHECKING ou SAVINGS
+C --> UC04 : consulte ses comptes
+C --> UC05 : saisit montant et type
+
+A --> UC01 : active le compte (bypass OTP)
+
+UC05 .> UC02 : <<include>>
+UC03 .> UC02 : <<include>>
 @enduml

@@ -1,34 +1,24 @@
-HELP.md
-target/
-.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
-
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
-
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
-
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
+# ── Secrets ───────────────────────────────────────────────────────────────────
 .env
 
-### VS Code ###
+# ── Maven build output ────────────────────────────────────────────────────────
+target/
+**/target/
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+*.iml
 .vscode/
+*.DS_Store
+
+# ── Node / frontend ───────────────────────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+
+# ── k6 test results ───────────────────────────────────────────────────────────
+k6/results/
+
+# ── Docker volumes (if accidentally created locally) ─────────────────────────
+docker-volumes/

@@ -35,7 +35,7 @@ spring:
           starttls:
             enable: false
 
-  # ── Redis (MFA challenge token store with TTL) ───────────────────────────
+  # Redis — tokens MFA (mfa:challenge:*, TTL 5 min)
   data:
     redis:
       host: ${REDIS_HOST:localhost}

@@ -1,24 +1,36 @@
-@startuml
+@startuml CanBankX — Flux UC-05 : Virement bancaire
 actor Client
-participant "KrakenD Gateway" as GW
-participant "PaymentService" as PS
+participant "KrakenD :8080" as GW
+participant "payment-service" as PS
 participant "Redis" as Cache
-database "MySQL" as DB
+participant "account-service" as AS
+database "db_payment" as DB
 
-Client -> GW : POST /transfer (JWT + Idempotency-Key) [cite: 69]
-GW -> PS : Forward request
+Client -> GW : POST /api/transactions\n{sourceAccount, amount, type}\nIdempotency-Key: <key>
+GW -> PS : POST /paymentservice/transactions
 
-PS -> Cache : GET idempotencyKey
-alt Key exists (Doublon)
-    Cache --> PS : Previous Result
-    PS --> Client : 200 OK (Cached)
-else Key new
-    PS -> DB : BEGIN Transaction
-    PS -> DB : Vérifier Solde & Contrôle AML [cite: 120]
-    PS -> DB : UPDATE Account Balance (Exactly-once) [cite: 69]
-    PS -> DB : INSERT BankTransaction & AuditLog [cite: 121]
-    PS -> DB : COMMIT
-    PS -> Cache : SET idempotencyKey (TTL 24h)
-    PS --> Client : 201 Created (Solde mis à jour) [cite: 123]
+PS -> Cache : GET payment:idem:<key>
+
+alt Clé trouvée dans Redis (doublon)
+  Cache --> PS : txId existant
+  PS -> DB : SELECT transaction WHERE id = txId
+  DB --> PS : transaction existante
+  PS --> Client : 201 (même réponse, aucune écriture)
+else Première requête
+  PS -> DB : INSERT bank_transaction (PENDING)
+  PS -> AS : PATCH /accountservice/accounts/number/{n}/debit
+  AS -> AS : UPDATE balance SET balance = balance - amount\nWHERE accountNumber = ? AND balance >= amount
+  AS --> PS : 200 OK (ou 422 si solde insuffisant)
+
+  opt TRANSFER seulement
+    PS -> AS : PATCH /accountservice/accounts/number/{n}/credit
+    AS --> PS : 200 OK
+  end
+
+  PS -> DB : UPDATE bank_transaction (COMPLETED)
+  PS -> Cache : SET payment:idem:<key> = txId, TTL 24h
+  PS --> Client : 201 Created {id, status: COMPLETED}
+
+  PS ->> PS : sendConfirmationEmail() [async]
 end
 @enduml

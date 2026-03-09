@@ -61,7 +61,7 @@ export default function () {
   const password = 'SmokeTest123!';
   const nas      = String(ts).slice(-9);
 
-  // ── IDENTITY ──────────────────────────────────────────────────────────────
+  // identity-service
 
   group('UC-01 / Register Client', () => {
     const res = http.post(
@@ -109,7 +109,7 @@ export default function () {
     check(res, { 'list clients → 200': r => r.status === 200 });
   });
 
-  // ── AUTH ──────────────────────────────────────────────────────────────────
+  // auth
 
   group('UC-02 / Login (MFA Step 1)', () => {
     const res = http.post(
@@ -137,7 +137,7 @@ export default function () {
     });
   });
 
-  // ── ACCOUNT ───────────────────────────────────────────────────────────────
+  // account-service
 
   group('UC-03 / Create CHECKING Account', () => {
     const res = http.post(
@@ -182,7 +182,7 @@ export default function () {
     check(res, { 'list accounts → 200': r => r.status === 200 });
   });
 
-  // ── PAYMENT ───────────────────────────────────────────────────────────────
+  // payment-service
 
   group('UC-05 / Submit DEBIT Transaction', () => {
     const res = http.post(
@@ -266,9 +266,7 @@ export default function () {
     });
   });
 
-  // ── ERROR CASES ───────────────────────────────────────────────────────────
-  // responseCallback tells k6 these non-2xx codes are *expected*, so they
-  // are NOT counted in http_req_failed (which would trip the rate==0 threshold).
+  // error cases — expected non-2xx responses
 
   group('Error / 404 Client Not Found', () => {
     const res = http.get(
@@ -329,7 +327,7 @@ export default function () {
     check(res, { '400 no target → 400': r => r.status === 400 });
   });
 
-  // ── HEALTH CHECKS ─────────────────────────────────────────────────────────
+  // direct health checks (bypasses KrakenD)
 
   group('Health / Identity', () => {
     const res = http.get(`${DIRECT_IDENTITY}/actuator/health`);

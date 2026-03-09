@@ -1,34 +1,83 @@
-@startuml
-package "Identity" {
-    class Client {
-        +UUID id
-        +String nasSimule
-        +Status status (PENDING, ACTIVE) [cite: 84]
-        +MfaSecret mfaKey
-    }
+@startuml CanBankX — Modèle de domaine
+
+package "identity-service\n(Bounded Context : Identité)" {
+  class Client {
+    +UUID id
+    +String firstName
+    +String lastName
+    +String email
+    +String passwordHash
+    +String nas
+    +String phoneNumber
+    +String address
+    +Status status
+  }
+  enum Status {
+    PENDING
+    ACTIVE
+    SUSPENDED
+  }
+  Client --> Status
 }
 
-package "Account" {
-    class Account {
-        +String accountNumber
-        +Type type (CHECKING, SAVINGS) [cite: 100]
-        +Decimal balance
-    }
+package "account-service\n(Bounded Context : Comptes)" {
+  class Account {
+    +UUID id
+    +String accountNumber
+    +UUID clientId
+    +AccountType type
+    +BigDecimal balance
+    +LocalDateTime createdAt
+  }
+  enum AccountType {
+    CHECKING
+    SAVINGS
+  }
+  Account --> AccountType
 }
 
-package "Transaction" {
-    class BankTransaction {
-        +String idempotencyKey [cite: 69]
-        +Decimal amount
-        +DateTime createdAt
-    }
-    class AuditEntry <<(E,#FF7700) Entity>> {
-        +String logData
-        .. Append-only .. [cite: 69]
-    }
+package "payment-service\n(Bounded Context : Paiements)" {
+  class BankTransaction {
+    +UUID id
+    +String idempotencyKey
+    +String sourceAccountNumber
+    +String targetAccountNumber
+    +BigDecimal amount
+    +TransactionType type
+    +TransactionStatus status
+    +LocalDateTime createdAt
+  }
+  class AuditLog {
+    +UUID id
+    +UUID transactionId
+    +String action
+    +String details
+    +LocalDateTime createdAt
+  }
+  enum TransactionType {
+    DEBIT
+    CREDIT
+    TRANSFER
+  }
+  enum TransactionStatus {
+    PENDING
+    COMPLETED
+    FAILED
+  }
+  BankTransaction --> TransactionType
+  BankTransaction --> TransactionStatus
+  BankTransaction "1" --> "1..*" AuditLog : génère
 }
 
-Client "1" *-- "0..*" Account
-Account "1" *-- "0..*" BankTransaction
-BankTransaction --> AuditEntry : génère [cite: 121]
+Client "1" -- "0..*" Account : possède (via clientId)
+Account "1" -- "0..*" BankTransaction : source (via accountNumber)
+
+note bottom of BankTransaction
+  idempotencyKey : contrainte UNIQUE en DB
+  + cache Redis 24h pour exactly-once
+end note
+
+note bottom of AuditLog
+  append-only — jamais mis à jour
+end note
 @enduml

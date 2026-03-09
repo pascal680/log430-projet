@@ -1,0 +1,50 @@
+@startuml CanBankX — Vue Composants (C&C)
+skinparam packageStyle rectangle
+
+package "KrakenD :8080" {
+  component [Router\n(krakend.json)] as GW
+}
+
+package "identity-service :8081" {
+  component [ClientController\nAuthController] as IC
+  component [ClientService\nEmailService] as IS
+  component [ClientRepository] as IR
+  database  [db_identity] as IDB
+  component [Redis\n(mfa:challenge:*)] as ICache
+  IC --> IS
+  IS --> IR
+  IR --> IDB
+  IS --> ICache
+}
+
+package "account-service :8082" {
+  component [AccountController] as AC
+  component [AccountService] as AS
+  component [AccountRepository] as AR
+  database  [db_account] as ADB
+  AC --> AS
+  AS --> AR
+  AR --> ADB
+}
+
+package "payment-service :8083" {
+  component [PaymentController] as PC
+  component [PaymentService] as PS
+  component [AccountClient\nIdentityClient] as PHTTP
+  component [BankTransactionRepository\nAuditLogRepository] as PR
+  database  [db_payment] as PDB
+  component [Redis\n(payment:idem:*)] as PCache
+  PC --> PS
+  PS --> PR
+  PS --> PHTTP
+  PS --> PCache
+  PR --> PDB
+}
+
+GW --> IC  : /api/clients/**\n/api/auth/**
+GW --> AC  : /api/accounts/**
+GW --> PC  : /api/transactions/**
+
+PHTTP --> AS : REST PATCH\n/accountservice/accounts/{n}/debit\n/accountservice/accounts/{n}/credit
+PHTTP --> IS : REST GET\n/identityservice/clients/{id}
+@enduml

@@ -1,6 +1,6 @@
 services:
 
-  # ── identity-service (UC-01, UC-02) – MySQL only ──────────────────────────
+  # identity-service — UC-01 Inscription, UC-02 Auth MFA
   identity-service:
     build:
       context: .
@@ -38,7 +38,7 @@ services:
       retries: 5
       start_period: 40s
 
-  # ── account-service (UC-03, UC-04) – MySQL only ───────────────────────────
+  # account-service — UC-03 Comptes, UC-04 Soldes
   account-service:
     build:
       context: .
@@ -68,7 +68,7 @@ services:
       retries: 5
       start_period: 40s
 
-  # ── payment-service (UC-05) – MySQL + Redis (idempotency cache) ───────────
+  # payment-service — UC-05 Virements (Redis idempotency + inter-service calls)
   payment-service:
     build:
       context: .
@@ -108,7 +108,7 @@ services:
       retries: 5
       start_period: 40s
 
-  # ── identity-service replica (LB instance 2) ─────────────────────────────
+  # Réplique identity-service pour le mode LB (--profile lb)
   # Only starts with:  docker compose --profile lb up -d
   identity-service-2:
     build:
@@ -146,7 +146,7 @@ services:
       retries: 5
       start_period: 40s
 
-  # ── account-service replica (LB instance 2) ───────────────────────────────
+  # Réplique account-service pour le mode LB (--profile lb)
   # Only starts with:  docker compose --profile lb up -d
   account-service-2:
     build:
@@ -176,7 +176,8 @@ services:
       retries: 5
       start_period: 40s
 
-  # ── payment-service replica (LB instance 2 — Nginx least-conn pool) ────────
+  # Réplique payment-service pour le mode LB (--profile lb)
+  # Les appels inter-services passent par nginx-lb pour répartir la charge
   # Only starts with:  docker compose --profile lb up -d
   payment-service-2:
     build:
@@ -193,8 +194,10 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       SERVER_PORT: 8083
-      ACCOUNT_SERVICE_URL: http://account-service:8082
-      IDENTITY_SERVICE_URL: http://identity-service:8081
+      # Route internal calls through nginx-lb so account/identity replicas
+      # also receive inter-service traffic (nginx-lb always exists in lb mode)
+      ACCOUNT_SERVICE_URL: http://nginx-lb:8082
+      IDENTITY_SERVICE_URL: http://nginx-lb:8081
       MAIL_HOST: mailhog
       MAIL_PORT: 1025
     depends_on:
@@ -216,7 +219,7 @@ services:
       retries: 5
       start_period: 40s
 
-  # ── Nginx Load Balancer (all three service pools) ────────────────────────
+  # Nginx load balancer — ports 8081/8082/8083 → upstream pools (--profile lb)
   # Only starts with:  docker compose --profile lb up -d
   nginx-lb:
     image: nginx:1.27-alpine
@@ -247,7 +250,7 @@ services:
       retries: 3
       start_period: 5s
 
-  # ── Nginx Prometheus Exporter (scrapes /nginx_status → Prometheus) ────────
+  # Exporte les métriques nginx vers Prometheus (--profile lb)
   # Only starts with:  docker compose --profile lb up -d
   nginx-exporter:
     image: nginx/nginx-prometheus-exporter:latest
@@ -261,7 +264,7 @@ services:
       - log430_projet-network
     restart: unless-stopped
 
-  # ── MySQL (shared host, isolated schemas per service) ────────────────────
+  # MySQL — schémas db_identity, db_account, db_payment (voir ADR-004)
   mysql:
     image: mysql:8.4.7
     restart: unless-stopped
@@ -284,7 +287,7 @@ services:
       retries: 5
       start_period: 15s
 
-  # ── DB-init (re-applies grants every startup, idempotent) ─────────────────
+  # Réapplique les grants MySQL à chaque démarrage (idempotent)
   # Solves the issue where MySQL volumes pre-exist and init.sql never re-runs.
   # Mounts the same init.sql used for first-boot and replays it as root.
   # --ssl-mode=DISABLED avoids caching_sha2_password SSL handshake issues in
@@ -317,7 +320,7 @@ services:
         fi
         echo "Grants applied successfully."
 
-  # ── Redis (payment-service idempotency cache only) ────────────────────────
+  # Redis — tokens MFA (5 min TTL) + clés idempotency paiements (24h TTL)
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -335,7 +338,7 @@ services:
       retries: 5
       start_period: 10s
 
-  # ── MailHog (catches outbound emails in dev – no real SMTP needed) ─────────
+  # MailHog — capture les emails OTP en dev (pas de vrai SMTP)
   mailhog:
     image: mailhog/mailhog:latest
     platform: linux/amd64   # no ARM64 image exists; Rosetta emulation on Apple Silicon
@@ -347,7 +350,6 @@ services:
       - log430_projet-network
     restart: unless-stopped
 
-  # ── Prometheus (scrapes all 3 services) ──────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -360,7 +362,6 @@ services:
       - log430_projet-network
     restart: unless-stopped
 
-  # ── Grafana (dashboard UI – auto-provisioned datasource + dashboard) ────────
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
@@ -381,9 +382,8 @@ services:
       - prometheus
     restart: unless-stopped
 
-  # ── KrakenD API Gateway ───────────────────────────────────────────────────
-  # LB OFF (default): KRAKEND_CONFIG not set → mounts krakend-nolb.json
-  # LB ON:            KRAKEND_CONFIG=krakend.json + --profile lb
+  # KrakenD — KRAKEND_CONFIG not set → krakend-nolb.json (direct)
+  #           KRAKEND_CONFIG=krakend.json + --profile lb → mode LB
   krakend:
     image: devopsfaith/krakend:2.7
     container_name: krakend
@@ -399,6 +399,11 @@ services:
         condition: service_healthy
       payment-service:
         condition: service_healthy
+      # Optional: only present when --profile lb is used.
+      # required: false means Compose skips this dependency silently in no-LB mode.
+      nginx-lb:
+        condition: service_healthy
+        required: false
     networks:
       - log430_projet-network
     restart: unless-stopped
@@ -409,7 +414,6 @@ services:
       retries: 3
       start_period: 10s
 
-  # ── Frontend Developer Portal ─────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
@@ -426,11 +430,7 @@ services:
       - log430_projet-network
     restart: unless-stopped
 
-  # ── k6 load tester ────────────────────────────────────────────────────────
-  # Not started by default. Run individual tests with:
-  #   docker compose run --rm k6 run /tests/smoke-test.js
-  #   docker compose run --rm k6 run /tests/load-test.js
-  #   docker compose run --rm k6 run /tests/stress-test.js
+  # k6 — démarrer avec: docker compose --profile testing run --rm k6 run /tests/<script>.js
   k6:
     image: grafana/k6:latest
     profiles:
