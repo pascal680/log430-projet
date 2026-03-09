@@ -1,0 +1,57 @@
+@startuml 4+1 — Vue Scénarios : UC-02 Authentification MFA
+title Scénario : Authentification à deux facteurs (MFA)
+
+actor Client
+participant "KrakenD :8080" as GW
+participant "AuthController" as AC
+participant "ClientService" as CS
+participant "Redis\nmfa:challenge:*" as Redis
+database "db_identity" as DB
+participant "EmailService\n(MailHog)" as Mail
+
+== Étape 1 : Login ==
+
+Client -> GW : POST /api/auth/login\n{email, password}
+GW -> AC    : POST /identityservice/auth/login
+AC -> CS    : login(email, password)
+CS -> DB    : SELECT * FROM clients WHERE email = ?
+DB --> CS   : Client (passwordHash, status)
+CS -> CS    : BCrypt.matches(password, hash)
+
+alt Statut != ACTIVE
+  CS --> AC : throw UnauthorizedException
+  AC --> Client : 401 Unauthorized
+end
+
+CS -> CS    : generateChallengeToken() → UUID
+CS -> Redis : SET mfa:challenge:{token} = clientId\nTTL 5 minutes
+CS -> Mail  : send OTP email (code 6 chiffres)
+CS --> AC   : {challengeToken}
+AC --> Client : 200 OK {challengeToken}
+
+== Étape 2 : Vérification MFA ==
+
+Client -> GW : POST /api/auth/mfa\n{challengeToken, otpCode}
+GW -> AC    : POST /identityservice/auth/mfa
+AC -> CS    : verifyMfa(challengeToken, otpCode)
+CS -> Redis : GET mfa:challenge:{challengeToken}
+
+alt Token expiré ou inexistant
+  Redis --> CS : null
+  CS --> AC : throw UnauthorizedException
+  AC --> Client : 401 Unauthorized
+end
+
+Redis --> CS : clientId
+CS -> Redis : DEL mfa:challenge:{token}  (usage unique)
+CS -> CS    : validateOtp(otpCode)
+
+alt OTP invalide
+  CS --> AC : throw UnauthorizedException
+  AC --> Client : 401 Unauthorized
+end
+
+CS --> AC   : SUCCESS
+AC --> Client : 200 OK {message: "SUCCESS"}
+
+@enduml

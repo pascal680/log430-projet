@@ -1,0 +1,59 @@
+name: CD
+
+on:
+  # Se déclenche uniquement quand le CI passe sur main
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  # Déclenchement manuel depuis l'onglet Actions
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy sur la VM Linux
+    runs-on: ubuntu-latest
+    # En workflow_run : ne déployer que si le CI a réussi
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Déployer via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          envs: DB_ROOT_PASSWORD,DB_USER,DB_PASSWORD
+          script: |
+            set -e
+            cd ~/log430-projet
+
+            echo "── Pull ────────────────────────────────────────────────"
+            git pull origin main
+
+            echo "── .env ────────────────────────────────────────────────"
+            printf 'DB_ROOT_PASSWORD=%s\nDB_USER=%s\nDB_PASSWORD=%s\n' \
+              "$DB_ROOT_PASSWORD" "$DB_USER" "$DB_PASSWORD" > .env
+
+            echo "── Déploiement ─────────────────────────────────────────"
+            docker network inspect log430_projet-network &>/dev/null \
+              || docker network create log430_projet-network
+
+            docker compose down --remove-orphans 2>/dev/null || true
+            docker compose up -d --build
+
+            sleep 15
+
+            curl -sf http://localhost:8080/__health \
+              && echo "KrakenD  : OK" || echo "KrakenD  : NOK"
+            curl -sf http://localhost:8081/actuator/health \
+              | grep -q '"status":"UP"' && echo "identity : OK" || echo "identity : NOK"
+            curl -sf http://localhost:8082/actuator/health \
+              | grep -q '"status":"UP"' && echo "account  : OK" || echo "account  : NOK"
+            curl -sf http://localhost:8083/actuator/health \
+              | grep -q '"status":"UP"' && echo "payment  : OK" || echo "payment  : NOK"
+
+        env:
+          DB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}

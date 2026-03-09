@@ -1,0 +1,102 @@
+@startuml 4+1 — Vue Logique : Modèle de domaine
+title Vue Logique — Modèle de domaine DDD
+
+skinparam packageStyle rectangle
+
+package "Bounded Context : Identité\n(identity-service / db_identity)" {
+
+  class Client <<Aggregate Root>> {
+    +UUID id
+    +String firstName
+    +String lastName
+    +String email          <<UNIQUE>>
+    +String passwordHash   <<BCrypt 8>>
+    +String nas            <<UNIQUE, 9 digits>>
+    +String phoneNumber
+    +String address
+    +Status status
+    +LocalDateTime createdAt
+  }
+
+  enum Status {
+    PENDING
+    ACTIVE
+    SUSPENDED
+  }
+
+  Client --> Status
+}
+
+package "Bounded Context : Comptes\n(account-service / db_account)" {
+
+  class Account <<Aggregate Root>> {
+    +UUID id
+    +String accountNumber  <<UNIQUE, generated>>
+    +UUID clientId
+    +AccountType type
+    +BigDecimal balance
+    +LocalDateTime createdAt
+  }
+
+  enum AccountType {
+    CHECKING
+    SAVINGS
+  }
+
+  Account --> AccountType
+}
+
+package "Bounded Context : Paiements\n(payment-service / db_payment)" {
+
+  class BankTransaction <<Aggregate Root>> {
+    +UUID id
+    +String idempotencyKey  <<UNIQUE>>
+    +String sourceAccountNumber
+    +String targetAccountNumber
+    +BigDecimal amount
+    +TransactionType type
+    +TransactionStatus status
+    +LocalDateTime createdAt
+  }
+
+  class AuditLog <<Value Object>> {
+    +UUID id
+    +UUID transactionId
+    +String action
+    +String details
+    +LocalDateTime createdAt
+  }
+
+  enum TransactionType {
+    DEBIT
+    CREDIT
+    TRANSFER
+  }
+  enum TransactionStatus {
+    PENDING
+    COMPLETED
+    FAILED
+  }
+
+  BankTransaction --> TransactionType
+  BankTransaction --> TransactionStatus
+  BankTransaction "1" *-- "1..*" AuditLog : génère (append-only)
+
+  note bottom of AuditLog
+    Jamais UPDATE ni DELETE
+    Traçabilité légale
+  end note
+
+  note right of BankTransaction
+    Double filet exactly-once :
+    1. Redis TTL 24h
+    2. UNIQUE SQL
+  end note
+}
+
+Client  "1" -- "0..*" Account         : possède (clientId)
+Account "1" -- "0..*" BankTransaction : impliqué (accountNumber)
+
+note "Pas de FK cross-schema\nRéférences par identifiant métier uniquement" as N1
+
+@enduml

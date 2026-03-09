@@ -1,0 +1,80 @@
+@startuml 4+1 — Vue Processus : Architecture interne C&C
+title Vue Processus — Architecture des composants (C&C)
+
+skinparam packageStyle rectangle
+
+package "KrakenD :8080" {
+  component [Router\nkrakend(-nolb).json\nAgrégation /summary] as GW
+}
+
+package "identity-service :8081" {
+  component [ClientController\n@RestController] as IC
+  component [AuthController\n@RestController] as IAC
+  component [ClientService\n@Service] as IS
+  component [EmailService\n@Service async] as IES
+  component [ClientRepository\nJPA Spring Data] as IR
+  database  "db_identity\n(MySQL)" as IDB
+  component [Redis\nmfa:challenge:* TTL 5min] as ICache
+
+  IC  --> IS
+  IAC --> IS
+  IS  --> IR
+  IS  --> IES
+  IS  --> ICache
+  IR  --> IDB
+}
+
+package "account-service :8082" {
+  component [AccountController\n@RestController\n(public + internal)] as AC
+  component [AccountService\n@Transactional] as AS
+  component [AccountRepository\nJPA Spring Data] as AR
+  database  "db_account\n(MySQL)" as ADB
+
+  AC --> AS
+  AS --> AR
+  AR --> ADB
+}
+
+package "payment-service :8083" {
+  component [PaymentController\n@RestController] as PC
+  component [PaymentService\n@Service orchestrator] as PS
+  component [AccountClient\nRestClient] as PACC
+  component [IdentityClient\nRestClient] as PIDC
+  component [BankTransactionRepository\nJPA Spring Data] as PTR
+  component [AuditLogRepository\nJPA append-only] as PAR
+  database  "db_payment\n(MySQL)" as PDB
+  component [Redis\npayment:idem:* TTL 24h] as PCache
+  component [EmailService\nCompletableFuture async] as PES
+
+  PC  --> PS
+  PS  --> PTR
+  PS  --> PAR
+  PS  --> PACC
+  PS  --> PIDC
+  PS  --> PCache
+  PS  --> PES
+  PTR --> PDB
+  PAR --> PDB
+}
+
+GW   --> IC   : POST /clients\nGET /clients/**\nPATCH /clients/**
+GW   --> IAC  : POST /auth/login\nPOST /auth/mfa
+GW   --> AC   : POST /accounts\nGET /accounts/**
+GW   --> PC   : POST /transactions\nGET /transactions/**
+
+PACC --> AC   : PATCH /accountservice/accounts/number/{n}/debit\nPATCH /accountservice/accounts/number/{n}/credit
+PIDC --> IC   : GET /identityservice/clients/{id}
+
+note right of PS
+  Orchestration exactly-once :
+  1. Check Redis
+  2. Check DB (fallback)
+  3. INSERT PENDING
+  4. Debit source
+  5. Credit destination
+  6. UPDATE COMPLETED
+  7. SET Redis TTL 24h
+  8. Email async
+end note
+
+@enduml

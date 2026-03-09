@@ -1,0 +1,78 @@
+@startuml 4+1 — Vue Scénarios : UC-05 Virement bancaire
+title Scénario : Virement bancaire avec garantie exactly-once (UC-05)
+
+actor Client
+participant "KrakenD :8080" as GW
+participant "PaymentController" as PC
+participant "PaymentService" as PS
+participant "Redis\npayment:idem:*" as Redis
+participant "AccountClient\n(RestClient)" as ACLI
+participant "AccountService" as AS
+participant "BankTransactionRepo" as TXR
+participant "AuditLogRepo" as ALR
+database "db_payment" as DB
+participant "EmailService\n(async)" as Mail
+
+Client -> GW : POST /api/transactions\n{sourceAccount, amount, type: TRANSFER\ntargetAccount}\nIdempotency-Key: <uuid>
+
+GW -> PC : POST /paymentservice/transactions
+PC -> PS : processTransaction(request, idempotencyKey)
+
+== Vérification idempotence ==
+PS -> Redis : GET payment:idem:<key>
+
+alt Clé trouvée dans Redis (doublon)
+  Redis --> PS : txId existant
+  PS -> TXR : findById(txId)
+  TXR --> PS : transaction existante
+  PS --> Client : 201 (même réponse, zéro écriture)
+
+else Première requête
+  Redis --> PS : null (miss)
+  PS -> TXR : findByIdempotencyKey(key)
+
+  alt Trouvé en DB (fallback — Redis redémarré)
+    TXR --> PS : transaction existante
+    PS --> Client : 201 (même réponse)
+  else Vraiment nouvelle transaction
+    TXR --> PS : null
+
+    == Exécution ==
+    PS -> TXR : save(PENDING)
+    PS -> ALR : save(TRANSFER_INITIATED)
+
+    PS -> ACLI : PATCH /debit {sourceAccount, amount}
+    ACLI -> AS : debit(accountNumber, amount)
+    AS -> AS : UPDATE balance WHERE balance >= amount
+    alt Solde insuffisant
+      AS --> ACLI : 422
+      ACLI --> PS : InsufficientFundsException
+      PS -> TXR : update → FAILED
+      PS -> ALR : save(DEBIT_FAILED)
+      PS --> Client : 422 Unprocessable Entity
+    end
+    AS --> ACLI : 200 {newBalance}
+    PS -> ALR : save(DEBIT_SUCCESS)
+
+    PS -> ACLI : PATCH /credit {targetAccount, amount}
+    ACLI -> AS : credit(accountNumber, amount)
+    alt Compte destination introuvable
+      AS --> ACLI : 404
+      ACLI --> PS : AccountNotFoundException
+      PS -> ACLI : PATCH /credit {sourceAccount, amount} (compensation)
+      PS -> TXR : update → FAILED
+      PS -> ALR : save(COMPENSATION_SUCCESS)
+      PS --> Client : 201 {status: FAILED}
+    end
+    AS --> ACLI : 200 {newBalance}
+
+    PS -> TXR : update → COMPLETED
+    PS -> ALR : save(TRANSFER_COMPLETED)
+    PS -> Redis : SET payment:idem:<key> = txId  TTL 24h
+    PS --> Client : 201 Created {id, status: COMPLETED}
+
+    PS ->> Mail : sendConfirmationEmail() [async, non bloquant]
+  end
+end
+
+@enduml

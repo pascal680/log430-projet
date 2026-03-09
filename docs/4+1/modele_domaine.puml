@@ -1,0 +1,118 @@
+@startuml Diagramme : Modèle de domaine complet
+title Modèle de domaine — CanBankX (DDD)
+
+skinparam classAttributeIconSize 0
+
+class Client <<Aggregate Root>> {
+  +UUID id
+  +String firstName
+  +String lastName
+  +String email          <<UNIQUE>>
+  +String passwordHash   <<BCrypt 8>>
+  +String nas            <<UNIQUE, 9 chiffres>>
+  +String phoneNumber
+  +String address
+  +Status status
+  +LocalDateTime createdAt
+  --
+  void activate()
+  void suspend()
+}
+
+enum Status {
+  PENDING
+  ACTIVE
+  SUSPENDED
+}
+
+class Account <<Aggregate Root>> {
+  +UUID id
+  +String accountNumber  <<UNIQUE>>
+  +UUID clientId         <<ref vers Client>>
+  +AccountType type
+  +BigDecimal balance
+  +LocalDateTime createdAt
+  --
+  void debit(BigDecimal amount)
+  void credit(BigDecimal amount)
+}
+
+enum AccountType {
+  CHECKING
+  SAVINGS
+}
+
+class BankTransaction <<Aggregate Root>> {
+  +UUID id
+  +String idempotencyKey      <<UNIQUE>>
+  +String sourceAccountNumber
+  +String targetAccountNumber
+  +BigDecimal amount
+  +TransactionType type
+  +TransactionStatus status
+  +LocalDateTime createdAt
+  --
+  void complete()
+  void fail()
+}
+
+class AuditLog <<Value Object>> {
+  +UUID id
+  +UUID transactionId
+  +String action
+  +String details
+  +LocalDateTime createdAt
+}
+
+enum TransactionType {
+  DEBIT
+  CREDIT
+  TRANSFER
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+Client --> Status
+Account --> AccountType
+BankTransaction --> TransactionType
+BankTransaction --> TransactionStatus
+BankTransaction "1" *-- "1..*" AuditLog : génère
+
+Client "1" --> "0..*" Account : possède\n(via clientId)
+Account "1" --> "0..*" BankTransaction : source\n(via accountNumber)
+
+note top of Client
+  Bounded Context : Identité
+  Service : identity-service
+  DB : db_identity
+end note
+
+note top of Account
+  Bounded Context : Comptes
+  Service : account-service
+  DB : db_account
+end note
+
+note top of BankTransaction
+  Bounded Context : Paiements
+  Service : payment-service
+  DB : db_payment
+end note
+
+note bottom of AuditLog
+  append-only
+  Jamais UPDATE ni DELETE
+  Traçabilité légale de chaque étape
+end note
+
+note bottom of BankTransaction
+  Double filet exactly-once :
+  - Redis : payment:idem:<key> TTL 24h
+  - MySQL : UNIQUE(idempotency_key)
+end note
+
+@enduml

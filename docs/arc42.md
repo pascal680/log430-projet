@@ -1,6 +1,16 @@
 # Arc42 — CanBankX
 
 > Document d'architecture LOG430 — Pascal Bourgoin
+> Dernière mise à jour : 8 mars 2026
+
+**Documents complémentaires :**
+- Analyse métier et DDD : [`docs/analyse-metier-ddd.md`](analyse-metier-ddd.md)
+- Vues 4+1 détaillées : [`docs/4+1-views.md`](4+1-views.md)
+- Décisions architecturales : [`docs/adr/`](adr/)
+- API REST & Sécurité (endpoints, BCrypt, MFA, erreurs) : [`docs/api-rest-securite.md`](api-rest-securite.md)
+- Microservices & Gateway (bounded contexts, KrakenD, Nginx LB) : [`docs/microservices-gateway.md`](microservices-gateway.md)
+- Observabilité & Tests de charge (Prometheus, Grafana, k6) : [`docs/observabilite-charge.md`](observabilite-charge.md)
+- Persistance & Intégrité (MySQL, Redis, exactly-once, audit) : [`docs/persistance-integrite.md`](persistance-integrite.md)
 
 ---
 
@@ -86,10 +96,14 @@ Les décisions principales sont résumées ici ; chacune est détaillée dans so
 | Erreurs | `ErrorResponse` partagé via module `common` | Format uniforme sur les 3 services (ADR-005) |
 | Load balancing | Nginx (mode LB opt-in) | `least_conn` avec failover passif, config externe à KrakenD |
 | Tests de charge | k6 (smoke / load / stress) | Scénarios réalistes avec métriques custom |
+| CI/CD | GitHub Actions (ci.yml + cd.yml) | CI sur ubuntu-latest, CD via SSH vers VM Linux |
 
 ---
 
 ## 5. Vues architecturales (4+1)
+
+> Les vues détaillées avec diagrammes PlantUML complets sont dans [`docs/4+1-views.md`](4+1-views.md).
+> L'analyse métier et DDD complète est dans [`docs/analyse-metier-ddd.md`](analyse-metier-ddd.md).
 
 ### 5.1 Vue Scénarios — Cas d'utilisation
 
@@ -317,15 +331,29 @@ Le cache est en mémoire volatile. Si Redis redémarre, les tokens MFA en cours 
 
 ---
 
+### 8.6 CI/CD
+
+Le pipeline est composé de deux workflows GitHub Actions :
+
+| Workflow | Déclencheur | Runner | Actions |
+|---|---|---|---|
+| **CI** (`.github/workflows/ci.yml`) | Push `main`/`develop`, PR vers `main` | ubuntu-latest | `./mvnw compile + package`, `npm build` |
+| **CD** (`.github/workflows/cd.yml`) | CI réussi sur `main`, ou manuel | ubuntu-latest | SSH → VM → `git pull` + `.env` + `docker compose up --build` |
+
+Le CD ne se déclenche que si le CI réussit (`workflow_run`). Les secrets de déploiement (identifiants VM, mots de passe DB) sont stockés dans GitHub Secrets et jamais dans le code.
+
+---
+
 ## 9. Décisions architecturales
 
 | ADR | Titre | Statut |
 |---|---|---|
-| [ADR-001](adr/ADR-001-microservices-bounded-contexts.md) | Décomposition en microservices avec Bounded Contexts DDD | Accepté |
-| [ADR-002](adr/ADR-002-redis-idempotence-mfa.md) | Redis pour double usage : idempotence et tokens MFA | Accepté |
-| [ADR-003](adr/ADR-003-krakend-api-gateway.md) | KrakenD comme API Gateway | Accepté |
-| [ADR-004](adr/ADR-004-schemas-mysql-isoles.md) | Schémas MySQL isolés par service | Accepté |
-| [ADR-005](adr/ADR-005-error-handling-versioning.md) | Gestion des erreurs normalisée et stratégie de versionnage | Accepté |
+| [ADR001](adr/ADR001-hexagonal.md) | Architecture en couches (Layered MVC) vs Hexagonale | Accepté |
+| [ADR002](adr/ADR002-microservices.md) | Décomposition en microservices avec Bounded Contexts DDD | Accepté |
+| [ADR003](adr/ADR003-ledger.md) | Journal d'audit append-only (Ledger) pour les transactions | Accepté |
+| [ADR004](adr/ADR004-api.md) | KrakenD comme API Gateway | Accepté |
+| [ADR005](adr/ADR005-authentication.md) | Authentification stateless avec MFA et challenge token Redis | Accepté |
+| [ADR006](adr/ADR006-cache.md) | Cache Redis pour idempotence des paiements | Accepté |
 
 ---
 

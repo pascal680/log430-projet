@@ -1,0 +1,80 @@
+@startuml 4+1 — Vue Déploiement
+title Vue Déploiement — Infrastructure Docker Compose
+
+node "Machine hôte (macOS / Linux VM)" {
+
+  node "Docker Engine" {
+
+    node "log430_projet-network (bridge)" {
+
+      component [KrakenD 2.7\n:8080\nAPI Gateway] as GW
+
+      package "Mode LB  (--profile lb)" #LightYellow {
+        component [nginx-lb\n:8081 / :8082 / :8083\nleast_conn] as NGLB
+        component [identity-service-2\n:8081] as ID2
+        component [account-service-2\n:8082]  as ACC2
+        component [payment-service-2\n:8083]  as PAY2
+        component [nginx-exporter\n:9113]     as NGEXP
+      }
+
+      component [identity-service\n:8081] as ID
+      component [account-service\n:8082]  as ACC
+      component [payment-service\n:8083]  as PAY
+      component [Frontend React\n:5173]   as FE
+
+      database [MySQL 8.4\n:3306\ndb_identity\ndb_account\ndb_payment] as DB
+      database [Redis 7\n:6379\nMFA tokens\nIdempotency keys] as Cache
+
+      component [Prometheus\n:9090] as PROM
+      component [Grafana\n:3000]   as GRAF
+      component [MailHog\n:8025/:1025] as MAIL
+
+      component [db-init\n(one-shot)] as DBINIT
+    }
+  }
+}
+
+actor "Développeur / Client" as Dev
+component [k6\n(--profile testing)] as K6
+
+Dev  --> GW   : :8080  (API REST)
+Dev  --> FE   : :5173  (Interface)
+Dev  --> PROM : :9090  (Métriques brutes)
+Dev  --> GRAF : :3000  (Dashboards)
+Dev  --> MAIL : :8025  (Emails OTP)
+
+K6 --> GW : tests de charge
+
+GW ..> NGLB : mode LB (krakend.json)
+GW --> ID   : mode direct (krakend-nolb.json)
+GW --> ACC
+GW --> PAY
+
+NGLB --> ID   : least_conn
+NGLB --> ID2
+NGLB --> ACC
+NGLB --> ACC2
+NGLB --> PAY
+NGLB --> PAY2
+NGEXP --> NGLB : /nginx_status
+
+ID   --> DB
+ACC  --> DB
+PAY  --> DB
+DBINIT --> DB : init.sql (grants)
+
+ID   --> Cache : mfa:challenge:*
+PAY  --> Cache : payment:idem:*
+ID   --> MAIL  : OTP email
+PAY  --> MAIL  : confirmation email
+
+ID   --> PROM  : /actuator/prometheus
+ID2  --> PROM
+ACC  --> PROM  : /actuator/prometheus
+ACC2 --> PROM
+PAY  --> PROM  : /actuator/prometheus
+PAY2 --> PROM
+NGEXP --> PROM
+PROM --> GRAF  : datasource
+
+@enduml

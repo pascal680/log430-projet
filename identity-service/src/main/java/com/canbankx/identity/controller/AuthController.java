@@ -5,6 +5,10 @@ import com.canbankx.identity.model.Client;
 import com.canbankx.identity.service.ClientService;
 import com.canbankx.identity.service.EmailService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +42,12 @@ public class AuthController {
         description = "Validates credentials, generates a one-time 6-digit code, and emails it to the client. "
                     + "Returns a `challengeToken` to be submitted with the OTP in the MFA step."
     )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Credentials valid — OTP sent, challengeToken returned",
+            content = @Content(schema = @Schema(implementation = MfaChallengeDTO.class))),
+        @ApiResponse(responseCode = "401", description = "Bad credentials or account not ACTIVE", content = @Content),
+        @ApiResponse(responseCode = "400", description = "Validation error", content = @Content)
+    })
     public ResponseEntity<MfaChallengeDTO> login(@Valid @RequestBody LoginRequestDTO dto) {
         Client client = clientService.authenticate(dto.getEmail(), dto.getPassword());
 
@@ -77,6 +87,11 @@ public class AuthController {
         description = "Validates the challenge token and the 6-digit OTP received by email. "
                     + "The token is single-use — re-login is required after a wrong OTP."
     )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "MFA verified — authentication complete",
+            content = @Content(schema = @Schema(implementation = AuthResponseDTO.class))),
+        @ApiResponse(responseCode = "401", description = "Token expired/invalid or wrong OTP", content = @Content)
+    })
     public ResponseEntity<AuthResponseDTO> verifyMfa(@Valid @RequestBody MfaVerifyDTO dto) {
         String key    = CHALLENGE_PREFIX + dto.getChallengeToken();
         String stored = redisTemplate.opsForValue().getAndDelete(key);

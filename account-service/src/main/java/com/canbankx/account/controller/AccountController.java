@@ -5,6 +5,12 @@ import com.canbankx.account.dto.AccountResponseDTO;
 import com.canbankx.account.dto.BalanceUpdateDTO;
 import com.canbankx.account.service.AccountService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.ArraySchema;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -18,13 +24,19 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/accountservice/accounts")
 @RequiredArgsConstructor
-@Tag(name = "Accounts", description = "Bank account management")
+@Tag(name = "Accounts", description = "UC-03 / UC-04 — Open accounts, query balances, debit/credit operations")
 public class AccountController {
 
     private final AccountService accountService;
 
     @PostMapping
-    @Operation(summary = "Open a new account")
+    @Operation(summary = "Open a new bank account", description = "Creates a CHECKING or SAVINGS account for an existing ACTIVE client")
+    @ApiResponses({
+        @ApiResponse(responseCode = "201", description = "Account created",
+            content = @Content(schema = @Schema(implementation = AccountResponseDTO.class))),
+        @ApiResponse(responseCode = "400", description = "Validation error or invalid account type", content = @Content),
+        @ApiResponse(responseCode = "404", description = "Client not found", content = @Content)
+    })
     public ResponseEntity<AccountResponseDTO> createAccount(@Valid @RequestBody AccountCreationDTO dto) {
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(new AccountResponseDTO(accountService.createAccount(dto)));
@@ -32,19 +44,34 @@ public class AccountController {
 
     @GetMapping("/{id}")
     @Operation(summary = "Get account by UUID")
-    public ResponseEntity<AccountResponseDTO> getById(@PathVariable UUID id) {
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Account found",
+            content = @Content(schema = @Schema(implementation = AccountResponseDTO.class))),
+        @ApiResponse(responseCode = "404", description = "Account not found", content = @Content)
+    })
+    public ResponseEntity<AccountResponseDTO> getById(
+            @Parameter(description = "Account UUID") @PathVariable UUID id) {
         return ResponseEntity.ok(new AccountResponseDTO(accountService.getAccountById(id)));
     }
 
     @GetMapping("/number/{accountNumber}")
     @Operation(summary = "Get account by account number")
-    public ResponseEntity<AccountResponseDTO> getByNumber(@PathVariable String accountNumber) {
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Account found",
+            content = @Content(schema = @Schema(implementation = AccountResponseDTO.class))),
+        @ApiResponse(responseCode = "404", description = "Account not found", content = @Content)
+    })
+    public ResponseEntity<AccountResponseDTO> getByNumber(
+            @Parameter(description = "10-digit account number", example = "2536624609") @PathVariable String accountNumber) {
         return ResponseEntity.ok(new AccountResponseDTO(accountService.getAccountByNumber(accountNumber)));
     }
 
     @GetMapping
-    @Operation(summary = "List accounts", description = "Pass clientId to filter by client, or omit for all accounts")
-    public ResponseEntity<List<AccountResponseDTO>> list(@RequestParam(required = false) UUID clientId) {
+    @Operation(summary = "List accounts", description = "Pass `clientId` to filter by client, or omit for all accounts")
+    @ApiResponse(responseCode = "200", description = "Account list",
+        content = @Content(array = @ArraySchema(schema = @Schema(implementation = AccountResponseDTO.class))))
+    public ResponseEntity<List<AccountResponseDTO>> list(
+            @Parameter(description = "Filter by client UUID (optional)") @RequestParam(required = false) UUID clientId) {
         List<AccountResponseDTO> result = (clientId != null
                 ? accountService.getAccountsByClientId(clientId)
                 : accountService.getAllAccounts())
@@ -53,20 +80,31 @@ public class AccountController {
     }
 
     @PatchMapping("/number/{accountNumber}/debit")
-    @Operation(summary = "Debit an account")
+    @Operation(summary = "Debit an account", description = "Internal endpoint called by payment-service. Atomically subtracts amount only if balance is sufficient")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Debit applied — returns updated account",
+            content = @Content(schema = @Schema(implementation = AccountResponseDTO.class))),
+        @ApiResponse(responseCode = "404", description = "Account not found", content = @Content),
+        @ApiResponse(responseCode = "422", description = "Insufficient funds", content = @Content)
+    })
     public ResponseEntity<AccountResponseDTO> debit(
-            @PathVariable String accountNumber, @Valid @RequestBody BalanceUpdateDTO dto) {
-        accountService.debit(accountNumber, dto.getAmount());   // commits, releases row lock
-        return ResponseEntity.ok(
-                new AccountResponseDTO(accountService.getAccountByNumber(accountNumber))); // fresh read-only tx
+            @Parameter(description = "Account number", example = "2536624609") @PathVariable String accountNumber,
+            @Valid @RequestBody BalanceUpdateDTO dto) {
+        accountService.debit(accountNumber, dto.getAmount());
+        return ResponseEntity.ok(new AccountResponseDTO(accountService.getAccountByNumber(accountNumber)));
     }
 
     @PatchMapping("/number/{accountNumber}/credit")
-    @Operation(summary = "Credit an account")
+    @Operation(summary = "Credit an account", description = "Internal endpoint called by payment-service. Atomically adds amount to the balance")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Credit applied — returns updated account",
+            content = @Content(schema = @Schema(implementation = AccountResponseDTO.class))),
+        @ApiResponse(responseCode = "404", description = "Account not found", content = @Content)
+    })
     public ResponseEntity<AccountResponseDTO> credit(
-            @PathVariable String accountNumber, @Valid @RequestBody BalanceUpdateDTO dto) {
-        accountService.credit(accountNumber, dto.getAmount());  // commits, releases row lock
-        return ResponseEntity.ok(
-                new AccountResponseDTO(accountService.getAccountByNumber(accountNumber))); // fresh read-only tx
+            @Parameter(description = "Account number", example = "2536624609") @PathVariable String accountNumber,
+            @Valid @RequestBody BalanceUpdateDTO dto) {
+        accountService.credit(accountNumber, dto.getAmount());
+        return ResponseEntity.ok(new AccountResponseDTO(accountService.getAccountByNumber(accountNumber)));
     }
 }

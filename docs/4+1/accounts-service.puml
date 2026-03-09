@@ -1,0 +1,86 @@
+@startuml Diagramme : account-service — structure interne et schéma DB
+title account-service — Structure interne et schéma DB
+
+skinparam packageStyle rectangle
+
+package "account-service :8082" {
+
+  package "controller" {
+    class AccountController {
+      +createAccount(request): ResponseEntity
+      +getAccountById(id): ResponseEntity
+      +getAccountsByClientId(clientId): ResponseEntity
+      +getAccountSummary(accountNumber): ResponseEntity
+      +debitAccount(accountNumber, amount): ResponseEntity
+      +creditAccount(accountNumber, amount): ResponseEntity
+    }
+  }
+
+  package "service" {
+    class AccountService {
+      +createAccount(request): Account
+      +getById(id): Account
+      +getByAccountNumber(number): Account
+      +getByClientId(clientId): List<Account>
+      +debit(accountNumber, amount): Account
+      +credit(accountNumber, amount): Account
+    }
+    note right of AccountService
+      debit/credit : @Transactional
+      UPDATE balance = balance - amount
+      WHERE balance >= amount
+      (atomique — évite le solde négatif)
+    end note
+  }
+
+  package "repository" {
+    interface AccountRepository {
+      +findByAccountNumber(number): Optional<Account>
+      +findByClientId(clientId): List<Account>
+    }
+  }
+
+  package "model" {
+    class Account <<@Entity>> {
+      +UUID id <<@Id>>
+      +String accountNumber <<@Column(unique=true)>>
+      +UUID clientId
+      +AccountType type
+      +BigDecimal balance
+      +LocalDateTime createdAt
+    }
+
+    enum AccountType {
+      CHECKING
+      SAVINGS
+    }
+
+    Account --> AccountType
+  }
+
+  AccountController --> AccountService
+  AccountService --> AccountRepository
+  AccountRepository --> Account
+}
+
+package "db_account (MySQL 8.4)" {
+  entity "accounts" as T {
+    id : VARCHAR(36) <<PK>>
+    --
+    account_number : VARCHAR(20) <<UNIQUE>>
+    client_id : VARCHAR(36) <<NOT NULL>>
+    type : ENUM('CHECKING','SAVINGS') <<NOT NULL>>
+    balance : DECIMAL(15,2) <<NOT NULL, DEFAULT 0>>
+    created_at : DATETIME <<NOT NULL>>
+  }
+}
+
+Account --> T : JPA @Entity\n@Table(name="accounts")
+
+note bottom of T
+  client_id : référence vers db_identity.clients
+  Pas de FK cross-schema — découplage physique
+  L'application garantit la cohérence via REST
+end note
+
+@enduml
