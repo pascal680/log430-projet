@@ -1,0 +1,124 @@
+@startuml Virement Interbancaire - Flux Événementiel Complet
+title Virement Interbancaire (Alice [Bank A] → Bob [Bank B] 100 CAD) - Tous les Événements
+
+autonumber
+actor Client as C
+participant "Gateway\n:8080" as GW
+participant "payment-orch\n:8093" as PO
+participant "Database\n+ Outbox" as DB_PO
+participant "alias-service\n:8092" as AS
+participant "Database\n+ Outbox" as DB_AS
+participant "Bank A\nLocal System" as BA
+participant "Bank B\nLocal System" as BB
+participant "clearing-settle\n:8094" as CS
+participant "Database\n+ Outbox" as DB_CS
+participant "Kafka Broker" as KAFKA
+participant "Redis" as REDIS
+
+== 1. CLIENT INITIATE PAYMENT ==
+C -> GW: POST /api/payment/initiate
+GW -> PO: {idempotencyKey, alias, amount}
+
+== 2. PAYMENT SERVICE - ATOMIC ==
+PO -> REDIS: Check idempotencyKey
+alt New Payment
+  PO -> DB_PO: Store Payment (status=INITIATED)\n+ OutboxEvent(payment.initiated)
+  DB_PO --> PO: COMMIT ✓
+  PO -> REDIS: Cache idempotencyKey → paymentId (TTL 24h)
+  PO --> GW: 201 Created
+  GW --> C: {paymentId, status}
+else Retry (cached)
+  PO -> REDIS: Return cached paymentId
+  PO --> GW: 200 OK (same payment)
+end
+
+== 3-4. PUBLISH: payment.initiated ==
+DB_PO -> KAFKA: Outbox polling → publish event
+KAFKA --> DB_PO: Acked ✓ Update published=TRUE
+
+== 5. ALIAS SERVICE LISTENS ==
+KAFKA -> AS: payment.initiated event
+AS -> DB_AS: Store Alias resolution\n+ OutboxEvent(alias.resolved)
+DB_AS --> AS: COMMIT ✓
+
+== 6-7. PUBLISH: alias.resolved ==
+DB_AS -> KAFKA: Outbox polling → publish event
+KAFKA --> DB_AS: Acked ✓ Update published=TRUE
+
+== 8. PAYMENT ORCH TRANSITION ==
+KAFKA -> PO: alias.resolved event
+PO -> DB_PO: Update status → DEBIT_REQUESTED\n+ OutboxEvent(payment.debit_requested)
+DB_PO --> PO: COMMIT ✓
+
+== 9-10. PUBLISH: payment.debit_requested ==
+DB_PO -> KAFKA: Outbox polling → publish event
+KAFKA --> DB_PO: Acked ✓ Update published=TRUE
+
+== 11. BANK A PROCESSES ==
+KAFKA -> BA: payment.debit_requested event
+BA -> BA: ⚛️ ATOMIC: Debit Alice -100 CAD\n+ OutboxEvent(bank_a.debit_accepted)
+BA -> KAFKA: Publish bank_a.debit_accepted
+
+== 12. PAYMENT ORCH TRANSITION ==
+KAFKA -> PO: bank_a.debit_accepted event
+PO -> DB_PO: Update status → CREDIT_REQUESTED\n+ OutboxEvent(payment.credit_requested)
+DB_PO --> PO: COMMIT ✓
+
+== 13-14. PUBLISH: payment.credit_requested ==
+DB_PO -> KAFKA: Outbox polling → publish event
+KAFKA --> DB_PO: Acked ✓ Update published=TRUE
+
+== 15. BANK B PROCESSES ==
+KAFKA -> BB: payment.credit_requested event
+BB -> BB: ⚛️ ATOMIC: Credit Bob +100 CAD\n+ OutboxEvent(bank_b.credit_accepted)
+BB -> KAFKA: Publish bank_b.credit_accepted
+
+== 16. PAYMENT ORCH ROUTES TO SETTLEMENT ==
+KAFKA -> PO: bank_b.credit_accepted event
+PO -> DB_PO: Update status → SETTLEMENT_TRIGGERED\n+ OutboxEvent(payment.settlement_triggered)
+DB_PO --> PO: COMMIT ✓
+
+== 17-18. PUBLISH: payment.settlement_triggered ==
+DB_PO -> KAFKA: Outbox polling → publish event
+KAFKA --> DB_PO: Acked ✓ Update published=TRUE
+
+== 19. CLEARING & SETTLEMENT ==
+KAFKA -> CS: payment.settlement_triggered event
+CS -> DB_CS: ⚛️ ATOMIC: INSERT 2 Ledger entries (IMMUTABLE)\nDEBIT bank-a, CREDIT bank-b\n+ OutboxEvent(clearing.settlement_confirmed)
+DB_CS --> CS: COMMIT ✓ Ledger balanced
+
+== 20-21. PUBLISH: clearing.settlement_confirmed ==
+DB_CS -> KAFKA: Outbox polling → publish event
+KAFKA --> DB_CS: Acked ✓ Update published=TRUE
+
+== 22. PAYMENT ORCH FINALIZES ==
+KAFKA -> PO: clearing.settlement_confirmed event
+PO -> DB_PO: Update status → SETTLED\n+ OutboxEvent(payment.settled)
+DB_PO --> PO: COMMIT ✓
+
+== 23-24. PUBLISH: payment.settled ==
+DB_PO -> KAFKA: Outbox polling → publish event
+KAFKA --> DB_PO: Acked ✓ Update published=TRUE
+
+== ✓ VIREMENT COMPLETE ==
+note over C, KAFKA
+  ✅ FINAL STATE:
+  • Alice balance: -100 CAD (immutable at Bank A)
+  • Bob balance: +100 CAD (immutable at Bank B)
+  • BC Ledger: DEBIT=CREDIT (append-only, signed)
+  • Payment status: SETTLED (no reversal possible)
+  • All 24 events logged in Kafka (7-day retention)
+  • Every operation atomic (no half-states)
+  
+  ⏱️ Timeline: ~1500-2500ms total
+  (Polling delays max ~500ms per event cycle)
+  
+  🔒 GUARANTEES:
+  ✓ Exactly-once (idempotency + outbox)
+  ✓ Atomic transactions
+  ✓ Zero data loss
+  ✓ Full audit trail
+  ✓ Settlement finality
+end note
+
+@enduml

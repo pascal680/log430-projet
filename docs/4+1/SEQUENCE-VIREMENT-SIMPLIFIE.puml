@@ -1,0 +1,64 @@
+@startuml Virement Interbancaire Simplifié
+title Processus de Virement Interbancaire (Vue Simplifiée)
+
+autonumber
+actor Client as C
+participant "Gateway" as GW
+participant "Payment\nOrchestration" as PO
+participant "Alias\nService" as AS
+participant "Bank A\n(Debtor)" as BA
+participant "Bank B\n(Creditor)" as BB
+participant "Clearing &\nSettlement" as CS
+participant "Kafka\nBroker" as KAFKA
+
+C -> GW: Initiate Payment\n(alias, amount)
+GW -> PO: Forward
+
+PO -> KAFKA: payment.initiated
+
+AS -> KAFKA: Listen
+KAFKA --> AS: payment.initiated
+AS -> KAFKA: alias.resolved
+
+PO -> KAFKA: Listen
+KAFKA --> PO: alias.resolved
+PO -> KAFKA: payment.debit_requested
+
+BA -> KAFKA: Listen
+KAFKA --> BA: payment.debit_requested
+BA -> BA: Debit Alice -100 CAD
+BA -> KAFKA: bank_a.debit_accepted
+
+PO -> KAFKA: Listen
+KAFKA --> PO: bank_a.debit_accepted
+PO -> KAFKA: payment.credit_requested
+
+BB -> KAFKA: Listen
+KAFKA --> BB: payment.credit_requested
+BB -> BB: Credit Bob +100 CAD
+BB -> KAFKA: bank_b.credit_accepted
+
+PO -> KAFKA: Listen
+KAFKA --> PO: bank_b.credit_accepted
+PO -> KAFKA: payment.settlement_triggered
+
+CS -> KAFKA: Listen
+KAFKA --> CS: payment.settlement_triggered
+CS -> CS: Record Ledger\n(DEBIT + CREDIT)
+CS -> KAFKA: clearing.settlement_confirmed
+
+PO -> KAFKA: Listen
+KAFKA --> PO: clearing.settlement_confirmed
+PO -> PO: Mark Payment: SETTLED
+
+note over C, CS
+  ✅ VIREMENT COMPLETED
+  
+  Alice: -100 CAD ✓
+  Bob: +100 CAD ✓
+  Ledger: BALANCED ✓
+  
+  Duration: ~1500-2500ms
+end note
+
+@enduml

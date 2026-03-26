@@ -1,0 +1,110 @@
+@startuml Saga Chorégraphiée - Virement Interbancaire
+title Saga Chorégraphiée - Virement Interbancaire (Architecture MVP)
+
+actor "Client / Bank A" as Client
+participant "API Gateway\n:8080" as Gateway
+participant "Payment\nOrchestration\n:8093" as Payment
+participant "Kafka\nBroker" as Kafka
+participant "Alias\nService\n:8092" as Alias
+participant "Bank A\n(Local)" as BankA
+participant "Bank B\n(Local)" as BankB
+participant "Clearing &\nSettlement\n:8094" as Settlement
+
+== Step 1: Client Initiate ==
+Client -> Gateway: POST /api/payment/initiate\n{alias, amount, idempotencyKey}
+Gateway -> Payment: Forward request
+
+activate Payment
+Payment -> Payment: valider requête\nvérifier idempotencyKey\ncréer Payment(status=INITIATED)
+Payment -> Payment: enregistrer OutboxEvent\n(payment.initiated)
+Payment --> Gateway: 201 Created\n{paymentId, status}
+deactivate Payment
+
+Gateway --> Client: 201 Accepted\npaymentId
+
+== Step 2: Publish Event & Alias Resolution ==
+Payment -> Kafka: publish payment.initiated
+Kafka -> Alias: listen payment.initiated
+
+activate Alias
+Alias -> Alias: résoudre alias\ntrouver participant & account\ncréer OutboxEvent\n(alias.resolved)
+Alias -> Kafka: publish alias.resolved
+deactivate Alias
+
+== Step 3: Payment Orch Receives Alias ==
+Kafka -> Payment: listen alias.resolved
+
+activate Payment
+Payment -> Payment: update status = DEBIT_REQUESTED\nenregistrer OutboxEvent\n(payment.debit_requested)
+Payment -> Kafka: publish payment.debit_requested
+deactivate Payment
+
+== Step 4: Bank A Processes Debit ==
+Kafka -> BankA: webhook payment.debit_requested
+
+activate BankA
+BankA -> BankA: débiter Alice -100 CAD\nenregistrer OutboxEvent\n(bank_a.debit_accepted)
+BankA -> Kafka: publish bank_a.debit_accepted
+deactivate BankA
+
+== Step 5: Payment Orch Routes to Bank B ==
+Kafka -> Payment: listen bank_a.debit_accepted
+
+activate Payment
+Payment -> Payment: update status = CREDIT_REQUESTED\nenregistrer OutboxEvent\n(payment.credit_requested)
+Payment -> Kafka: publish payment.credit_requested
+deactivate Payment
+
+== Step 6: Bank B Processes Credit ==
+Kafka -> BankB: webhook payment.credit_requested
+
+activate BankB
+BankB -> BankB: créditer Bob +100 CAD\nenregistrer OutboxEvent\n(bank_b.credit_accepted)
+BankB -> Kafka: publish bank_b.credit_accepted
+deactivate BankB
+
+== Step 7: Payment Orch Routes to Settlement ==
+Kafka -> Payment: listen bank_b.credit_accepted
+
+activate Payment
+Payment -> Payment: update status = SETTLEMENT_TRIGGERED\nenregistrer OutboxEvent\n(payment.settlement_triggered)
+Payment -> Kafka: publish payment.settlement_triggered
+deactivate Payment
+
+== Step 8: Settlement Records Ledger ==
+Kafka -> Settlement: listen payment.settlement_triggered
+
+activate Settlement
+Settlement -> Settlement: créer 2 LedgerEntry (IMMUTABLE)\nDEBIT Bank A\nCREDIT Bank B\nvérifier: SUM(DEBIT) = SUM(CREDIT)
+Settlement -> Settlement: enregistrer OutboxEvent\n(clearing.settlement_confirmed)
+Settlement -> Kafka: publish clearing.settlement_confirmed
+deactivate Settlement
+
+== Step 9: Payment Finalized ==
+Kafka -> Payment: listen clearing.settlement_confirmed
+
+activate Payment
+Payment -> Payment: update status = SETTLED\nenregistrer OutboxEvent\n(payment.settled)
+Payment -> Kafka: publish payment.settled
+deactivate Payment
+
+== ✅ Virement Complété ==
+note over Client, Settlement
+  ✅ FINAL STATE:
+  
+  • Payment Status: SETTLED (irrévocable)
+  • Alice Balance: -100 CAD (immutable at Bank A)
+  • Bob Balance: +100 CAD (immutable at Bank B)
+  • BC Ledger: DEBIT = CREDIT (append-only, signed)
+  
+  ⏱️ Duration: ~1500-2500ms
+  📊 Events Logged: 9 (in Kafka, 7-day retention)
+  
+  🔒 Guarantees:
+  ✓ Exactly-once (idempotency cache + outbox)
+  ✓ Atomic transactions (no half-states)
+  ✓ Zero data loss (outbox polling)
+  ✓ Settlement finality (ledger immutable)
+end note
+
+@enduml

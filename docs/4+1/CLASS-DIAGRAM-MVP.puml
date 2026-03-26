@@ -1,0 +1,255 @@
+@startuml Diagramme de Classes - CanBankX Phase 2 MVP
+title Diagramme de Classes - Architecture MVP
+
+hide empty members
+skinparam classBackgroundColor #FEFCE8
+skinparam classBorderColor #333333
+skinparam classArrowColor #333333
+
+' ============================================================
+' PARTICIPANT MANAGEMENT
+' ============================================================
+
+package "Gestion des Participants" {
+  class Participant {
+    - id: UUID
+    - nom: String
+    - statut: StatutParticipant
+    - pointTerminalAPI: String
+    - dateCreation: Instant
+    --
+    + obtenirParticipant(id): Participant
+    + validerStatutActif(): boolean
+  }
+
+  enum StatutParticipant {
+    ACTIF
+    SUSPENDU
+  }
+}
+
+' ============================================================
+' ALIAS REGISTRY
+' ============================================================
+
+package "Registre d'Alias" {
+  class Alias {
+    - id: UUID
+    - clé: String [UNIQUE]
+    - type: TypeAlias
+    - participantId: UUID
+    - codeCompte: String
+    - statut: StatutAlias
+    - dateCreation: Instant
+    --
+    + résoudre(): InformationAlias
+    + validerUnicité(): boolean
+    + obtenirMasqué(): String
+  }
+
+  enum TypeAlias {
+    COURRIEL
+    TELEPHONE
+    PARAMETRE_ALPHA
+  }
+
+  enum StatutAlias {
+    ACTIVE
+    DESACTIVEE
+  }
+
+  class ÉvènementOutboxAlias {
+    - id: BIGINT [AUTO_INCREMENT]
+    - idAgrégat: UUID
+    - typeÉvènement: String
+    - charge: JSON
+    - publiée: boolean
+    - dateCreation: Timestamp
+    - datePublication: Timestamp
+    --
+    + marquerPubiliée(): void
+  }
+}
+
+' ============================================================
+' ORCHESTRATION DE PAIEMENT
+' ============================================================
+
+package "Orchestration de Paiement" {
+  class Paiement {
+    - id: UUID
+    - clésIdempotence: String [UNIQUE]
+    - idParticipantInitiateur: UUID
+    - cleAlias: String
+    - montant: Decimal
+    - devise: String
+    - statut: StatutPaiement
+    - dateCreation: Instant
+    - dateReglement: Instant
+    --
+    + initier(): void
+    + transitionner(nouveauStatut): void
+    + obtenirMontantFinal(): Decimal
+  }
+
+  enum StatutPaiement {
+    INITIE
+    DEBIT_DEMANDE
+    CREDIT_DEMANDE
+    REGLEMENT_DECLENCHE
+    REGLE
+    ECHOUE
+  }
+
+  class ÉvènementOutboxPaiement {
+    - id: BIGINT [AUTO_INCREMENT]
+    - idAgrégat: UUID
+    - typeÉvènement: String
+    - charge: JSON
+    - publiée: boolean
+    - dateCreation: Timestamp
+    - datePublication: Timestamp
+    --
+    + marquerPubiliée(): void
+  }
+
+  class CacheIdempotence {
+    - clésIdempotence: String [PK]
+    - idPaiement: UUID
+    - dateCreation: Instant
+    - TTL: 24h
+    --
+    + obtenirPaiementMis En Cache(): UUID
+    + estValide(): boolean
+  }
+}
+
+' ============================================================
+' CLEARING ET REGLEMENT
+' ============================================================
+
+package "Clearing et Règlement" {
+  class EntréeLedger {
+    - id: BIGINT [AUTO_INCREMENT]
+    - typeEntree: DirectionEntree
+    - idParticipant: UUID
+    - idPaiement: UUID
+    - montant: Decimal
+    - timestamp: Instant
+    - hachage: String [SHA256]
+    - signature: String [BC_SIGN]
+    --
+    + verifierIntégrité(): boolean
+    + obtenirSignature(): String
+    + estImmuable(): true
+  }
+
+  enum DirectionEntree {
+    DEBIT
+    CREDIT
+  }
+
+  class ÉvènementOutboxClearing {
+    - id: BIGINT [AUTO_INCREMENT]
+    - idAgrégat: UUID
+    - typeÉvènement: String
+    - charge: JSON
+    - publiée: boolean
+    - dateCreation: Timestamp
+    - datePublication: Timestamp
+    --
+    + marquerPubiliée(): void
+  }
+
+  class VérificateurInvariant {
+    + vérifierSommeDebit(): BigDecimal
+    + vérifierSommeCredit(): BigDecimal
+    + vérifierLedgerEquilibre(): boolean
+  }
+}
+
+' ============================================================
+' BROKER KAFKA (MESSAGING)
+' ============================================================
+
+package "Broker Kafka" {
+  class TopicKafka {
+    - nom: String
+    - partitions: int
+    - réplication: int
+    - rétention: Duration
+    - compression: String
+    --
+    + obtenirPartitionParClé(): int
+  }
+
+  class ConsommateurKafka {
+    - groupeConsommateurs: String
+    - topicsÉcoutés: List<String>
+    - décalageActuel: long
+    --
+    + traiterÉvènement(évenement): void
+    + confirmerDécalage(): void
+  }
+}
+
+' ============================================================
+' CACHE REDIS
+' ============================================================
+
+package "Cache Redis" {
+  class CacheRedis {
+    - hôte: String
+    - port: int
+    - TTL: Duration
+    --
+    + obtenirClé(clé): Value
+    + définirClé(clé, valeur, TTL): void
+    + supprimerClé(clé): void
+  }
+}
+
+' ============================================================
+' ASSOCIATIONS
+' ============================================================
+
+' Participant → Alias
+Participant "1" -- "0..*" Alias : possède >
+Alias "1" .. "0..*" ÉvènementOutboxAlias : émet
+
+' Alias → Paiement
+Alias "1" -- "0..*" Paiement : utilisé pour >
+
+' Participant → Paiement
+Participant "1" -- "0..*" Paiement : initie >
+
+' Paiement → Outbox
+Paiement "1" -- "0..*" ÉvènementOutboxPaiement : émet
+
+' Paiement → Idempotence
+Paiement "1" .. "0..1" CacheIdempotence : gardé par >
+
+' Paiement → Ledger
+Paiement "1" -- "2..*" EntréeLedger : règle en
+
+' Participant → Ledger
+Participant "1" -- "0..*" EntréeLedger : impacté >
+
+' Ledger → Outbox
+EntréeLedger "1" .. "0..*" ÉvènementOutboxClearing : émet
+
+' CacheIdempotence → Redis
+CacheIdempotence "0..*" .. "1" CacheRedis : stocké >
+
+' Outbox → Kafka (tous les types envoient via polling)
+ÉvènementOutboxAlias "0..*" .. "1" TopicKafka : publie >
+ÉvènementOutboxPaiement "0..*" .. "1" TopicKafka : publie >
+ÉvènementOutboxClearing "0..*" .. "1" TopicKafka : publie >
+
+' Kafka → Consommateurs
+TopicKafka "1" -- "0..*" ConsommateurKafka : écouté >
+
+' Clearing
+EntréeLedger "2..*" -- "1" VérificateurInvariant : validé >
+
+@enduml
