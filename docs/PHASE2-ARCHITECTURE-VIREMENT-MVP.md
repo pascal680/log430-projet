@@ -74,7 +74,7 @@ DB: db_alias (MySQL 8.4)
 Cache: Redis (TTL 5 min per resolution)
 
 Entities:
-  - Alias: id (UUID), key (email|phone|alphaparam), 
+  - Alias: id (UUID), key (email|phone), 
            participant_id, account_code, status
 
 APIs:

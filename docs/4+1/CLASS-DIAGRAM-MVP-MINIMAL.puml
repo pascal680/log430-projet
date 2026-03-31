@@ -1,0 +1,289 @@
+@startuml Diagramme de Classes - MVP Minimal (Outbox Pattern + Settlement)
+title Architecture Minimale + Outbox Pattern\nTransfert Interbancaire + Settlement + KrakenD
+
+hide empty members
+skinparam classBackgroundColor #E8F4F8
+skinparam classBorderColor #01579B
+skinparam classArrowColor #01579B
+
+' ============================================================
+' API GATEWAY WITH LOAD BALANCING
+' ============================================================
+
+package "🚪 API Gateway (KrakenD :8080)" {
+  class KrakenDGateway {
+    name: String
+    port: int = 8080
+    timeout: 15s
+    cache_ttl: 300s
+    --
+    healthCheck(): Status
+    routeRequest(endpoint): Service
+    enforceRateLimit(): void
+  }
+
+  class LoadBalancerRoute {
+    endpoint: String
+    methods: List[String]
+    backends: List[String]
+    timeout: Duration
+    --
+    selectBackend(): String
+    validateRequest(): boolean
+  }
+}
+
+' ============================================================
+' ALIAS CONFIGURATION - HARDCODED
+' ============================================================
+
+package "⚙️ Alias Configuration (Hardcoded)" {
+  class AliasRegistry {
+    aliases: Map[String, AliasEntry]
+    --
+    resolve(key: String): AliasEntry
+    getAccountCode(key: String): String
+  }
+
+  class AliasEntry {
+    key: String (email|phone)
+    participantId: UUID
+    accountCode: String
+    type: String
+  }
+}
+
+' ============================================================
+' PAYMENT ORCHESTRATION - CORE LOGIC
+' ============================================================
+
+package "💳 Payment Orchestration Service" {
+  class Payment {
+    id: UUID [PK]
+    idempotencyKey: String [UNIQUE]
+    initiatorParticipantId: UUID
+    recipientAlias: String
+    amount: Decimal
+    currency: String = "CAD"
+    status: PaymentStatus
+    createdAt: Instant
+    settledAt: Instant
+    --
+    updateStatus(status: PaymentStatus)
+  }
+
+  enum PaymentStatus {
+    INITIATED
+    DEBIT_REQUESTED
+    CREDIT_REQUESTED
+    SETTLEMENT_TRIGGERED
+    SETTLED
+    FAILED
+  }
+
+  class IdempotencyCache {
+    key: String [PK]
+    paymentId: UUID
+    createdAt: Instant
+    ttlSeconds: 86400
+    --
+    cachePayment(id: UUID)
+    getCachedPayment(): UUID
+    isExpired(): boolean
+  }
+
+  class PaymentOutboxEvent {
+    id: BIGINT [AUTO_INCREMENT, PK]
+    aggregateRootId: UUID [FK → Payment.id]
+    eventType: String
+    payload: JSON
+    published: boolean = false
+    createdAt: Timestamp
+    publishedAt: Timestamp
+    --
+    {static} of(aggregateRootId, eventType, payload)
+    markPublished(): void
+  }
+
+  class PaymentOutboxPublisher {
+    <<@Scheduled(fixedRate=500ms)>>
+    --
+    publishPendingEvents(): void
+  }
+}
+
+' ============================================================
+' CLEARING SERVICE - SETTLEMENT & LEDGER
+' ============================================================
+
+package "🏛️ Clearing Service (Settlement)" {
+  class LedgerEntry {
+    id: BIGINT [AUTO_INCREMENT, PK]
+    direction: EntryDirection
+    participantId: UUID
+    paymentId: UUID
+    amount: Decimal
+    timestamp: Instant
+    hash: String [SHA256]
+    --
+    {static} create(direction, participantId, paymentId, amount)
+    verifyIntegrity(): boolean
+  }
+
+  enum EntryDirection {
+    DEBIT
+    CREDIT
+  }
+
+  class SettlementOutboxEvent {
+    id: BIGINT [AUTO_INCREMENT, PK]
+    aggregateRootId: UUID [paymentId]
+    eventType: String
+    payload: JSON
+    published: boolean = false
+    createdAt: Timestamp
+    publishedAt: Timestamp
+    --
+    {static} of(aggregateRootId, eventType, payload)
+    markPublished(): void
+  }
+
+  class ClearingOutboxPublisher {
+    <<@Scheduled(fixedRate=500ms)>>
+    --
+    publishPendingEvents(): void
+  }
+
+  class LedgerValidator {
+    --
+    checkBalance(): boolean
+    verifyHash(entry: LedgerEntry): boolean
+    validateDoubleEntry(): boolean
+  }
+}
+
+' ============================================================
+' MESSAGE BROKER & PATTERNS
+' ============================================================
+
+package "📡 Event Infrastructure" {
+  class KafkaTemplate {
+    bootstrapServers: String
+    --
+    send(topic, key, value): CompletableFuture
+  }
+
+  class KafkaConsumer {
+    groupId: String
+    topics: List[String]
+    --
+    consume(record: ConsumerRecord): void
+    commitOffset(): void
+  }
+}
+
+' ============================================================
+' RELATIONSHIPS
+' ============================================================
+
+KrakenDGateway --> LoadBalancerRoute : routes
+LoadBalancerRoute --> Payment : proxies to
+
+Payment --> PaymentStatus
+Payment "1" o-- "*" PaymentOutboxEvent : written atomically with
+Payment --> IdempotencyCache : uses Redis
+Payment --> AliasRegistry : resolves alias
+
+PaymentOutboxPublisher --> PaymentOutboxEvent : polls (published=false)
+PaymentOutboxPublisher --> KafkaTemplate : sends to Kafka
+PaymentOutboxPublisher --> PaymentOutboxEvent : marks published=true
+
+LedgerEntry --> EntryDirection
+LedgerEntry "2" --o "1" SettlementOutboxEvent : written atomically with
+
+ClearingOutboxPublisher --> SettlementOutboxEvent : polls (published=false)
+ClearingOutboxPublisher --> KafkaTemplate : sends to Kafka
+ClearingOutboxPublisher --> SettlementOutboxEvent : marks published=true
+
+LedgerValidator --> LedgerEntry : validates
+
+KafkaConsumer --> KafkaTemplate : reads from
+
+' ============================================================
+' ANNOTATIONS & NOTES
+' ============================================================
+
+note right of Payment
+  **State Machine:**
+  INITIATED
+    ↓
+  DEBIT_REQUESTED
+    ↓
+  CREDIT_REQUESTED
+    ↓
+  SETTLEMENT_TRIGGERED
+    ↓
+  SETTLED ✓ (final)
+end note
+
+note right of LedgerEntry
+  **Immutable Ledger:**
+  • Append-only (no setters)
+  • SHA256 hash par entrée
+  • SQL trigger prévient UPDATE
+  • UNIQUE(payment_id, direction)
+  • DEBIT + CREDIT = balanced
+end note
+
+note right of IdempotencyCache
+  **Exact-Once Semantics:**
+  • Redis TTL: 24h
+  • Lookup: <1ms
+  • Si retry avec même clé
+    → retourne paymentId caché
+end note
+
+note right of AliasRegistry
+  **Hardcoded Aliases:**
+  ✗ Pas de service alias
+  ✗ Pas de DB
+  ✗ Pas de YAML
+  ✓ Map.of(...) dans AliasRegistry.java
+  ✓ Immuable, chargée au démarrage
+  ✓ alice@mail.com → participant-001
+  ✓ bob@mail.com   → participant-002
+end note
+
+note right of PaymentOutboxEvent
+  **Outbox Pattern (Payment):**
+  1. Payment + OutboxEvent
+     → MÊME transaction JPA
+  2. @Scheduled poll 500ms
+     → kafkaTemplate.send()
+  3. markPublished = true
+  Garantit: au moins une fois
+  + idempotence côté consumer
+end note
+
+note right of SettlementOutboxEvent
+  **Outbox Pattern (Clearing):**
+  1. LedgerEntry(x2) + OutboxEvent
+     → MÊME transaction JPA
+  2. @Scheduled poll 500ms
+     → publie clearing.settlement_confirmed
+  3. markPublished = true
+end note
+
+note top of KrakenDGateway
+  **Flux Complet:**
+  Client → KrakenD :8080
+       → PaymentService :8083
+       → DB write + OutboxEvent (atomic)
+       → OutboxPoller → Kafka
+       → ClearingService consume
+       → LedgerEntry(x2) + OutboxEvent (atomic)
+       → OutboxPoller → Kafka
+       → PaymentService → SETTLED ✓
+end note
+
+@enduml

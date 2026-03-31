@@ -1,0 +1,142 @@
+@startuml Cas d'Utilisation - CanBankX Phase 2 MVP
+title Diagrammes de Cas d'Utilisation - Architecture Phase 2
+
+left to right direction
+skinparam actorBackgroundColor #FFE8B6
+skinparam usecaseBackgroundColor #E1F5FE
+skinparam packageBackgroundColor #F3E5F5
+
+' ============================================================
+' ACTEURS EXTERNES
+' ============================================================
+
+actor "Client Bank A\n(Payeur)" as ClientA
+actor "Client Bank B\n(Bénéficiaire)" as ClientB
+actor "Clearing Service\n(BC Central)" as ClearingBC
+
+' ============================================================
+' SYSTEM BOUNDARY
+' ============================================================
+
+package "CanBankX — Système de Paiement Phase 2 MVP" {
+
+  ' ============================================================
+  ' ALIAS REGISTRY USECASES
+  ' ============================================================
+
+  package "Alias Registry Service" {
+    usecase "UC-02: Enregistrer Alias\n(email ou téléphone)" as US2
+    usecase "UC-04: Résoudre Alias\n(lookup bénéficiaire)" as US4
+  }
+
+  ' ============================================================
+  ' PAYMENT ORCHESTRATION USECASES
+  ' ============================================================
+
+  package "Payment Orchestration Service" {
+    usecase "UC-01: Initier Paiement\n(client saisit montant + bénéficiaire)" as US1
+    usecase "UC-05: Orchestrer Saga\n(débit + crédit + confirmation)" as US5
+    usecase "UC-06: Répondre Paiement Entrant\n(Bank B valide crédit)" as US6
+  }
+
+  ' ============================================================
+  ' CLEARING & SETTLEMENT USECASES
+  ' ============================================================
+
+  package "Clearing & Settlement Service" {
+    usecase "UC-07: Enregistrer Ledger\n(écritures immuables + signatures)" as US7
+    usecase "Confirmer Finalité\n(settlement_confirmed)" as SettlementConfirm
+  }
+}
+
+' ============================================================
+' RELATIONSHIPS : CLIENT A (PAYEUR)
+' ============================================================
+
+ClientA --> US1 : "saisit montant +\nalias bénéficiaire"
+ClientA --> US2 : "peut aussi créer\nson propre alias"
+
+US1 --> US4 : "résout alias\n(lookup)"
+US1 --> US5 : "déclenche"
+
+' ============================================================
+' RELATIONSHIPS : CLIENT B (BÉNÉFICIAIRE)
+' ============================================================
+
+ClientB --> US2 : "crée alias\n(email/téléphone)"
+ClientB --> US6 : "reçoit notification\net valide crédit"
+
+' ============================================================
+' RELATIONSHIPS : ORCHESTRATION SAGA
+' ============================================================
+
+US5 --> US4 : "utilise"
+US5 --> US6 : "envoie crédit\nà Bank B"
+US5 --> US7 : "déclenche\nREGLEMENT_DECLENCHE"
+
+' ============================================================
+' RELATIONSHIPS : CLEARING
+' ============================================================
+
+US7 --> SettlementConfirm : "émet\nclearning.settlement_confirmed"
+SettlementConfirm --> US1 : "marque Payment\nREGLE (final)"
+
+ClearingBC --> US7 : "déclenche"
+
+' ============================================================
+' NOTES
+' ============================================================
+
+note right of US2
+  **Prérequis :**
+  Bob crée d'abord son alias
+  avant qu'Alice puisse le payer
+end note
+
+note right of US4
+  **Performance :**
+  Cache Redis <50ms
+  (COURRIEL, TELEPHONE)
+end note
+
+note right of US5
+  **State Machine :**
+  INITIATED
+  → DEBIT_REQUESTED
+  → CREDIT_REQUESTED
+  → REGLEMENT_DECLENCHE
+end note
+
+note right of US7
+  **Propriétés :**
+  ✓ Append-only
+  ✓ Signé (BC)
+  ✓ Immuable (triggers)
+  ✓ Double-entrée comptable
+end note
+
+note right of SettlementConfirm
+  **Transition finale :**
+  REGLEMENT_DECLENCHE
+  → REGLE (irrévocable)
+end note
+
+' ============================================================
+' HAPPY PATH DESCRIPTION
+' ============================================================
+
+note left of ClearingBC
+  **Happy Path:**
+  
+  [T0] Bob crée alias (US2)
+  [T1] Alice saisit paiement (US1)
+  [T2] Saga orchestre (US5)
+  [T3] Clearing enregistre (US7)
+  [T4] Paiement REGLE (final)
+  
+  Alice: -100 CAD
+  Bob: +100 CAD
+  BC Ledger: DEBIT=CREDIT
+end note
+
+@enduml

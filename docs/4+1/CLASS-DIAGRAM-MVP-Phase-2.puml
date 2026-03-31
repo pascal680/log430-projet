@@ -50,7 +50,6 @@ package "Registre d'Alias" {
   enum TypeAlias {
     COURRIEL
     TELEPHONE
-    PARAMETRE_ALPHA
   }
 
   enum StatutAlias {

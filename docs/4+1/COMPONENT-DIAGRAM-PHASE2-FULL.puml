@@ -1,0 +1,195 @@
+@startuml Diagramme de Composants - Phase 2 MVP Complète
+title Architecture Phase 2 MVP Complète\nDiagramme de Composants
+
+!define FONTCOLOR_COMP #333333
+skinparam component {
+    BackgroundColor #E3F2FD
+    BorderColor #1565C0
+    ArrowColor #1565C0
+}
+skinparam interface {
+    BackgroundColor #FFFFFF
+    BorderColor #1565C0
+}
+skinparam note {
+    BackgroundColor #FFF9C4
+    BorderColor #F57F17
+}
+
+' ============================================================
+' CLIENT LAYER
+' ============================================================
+
+package "👥 Client Layer" {
+    component [Web Browser\n(Frontend :5173)] as WebClient
+    component [k6 Load Tester\n(Load/Smoke/Stress)] as K6Tester
+}
+
+' ============================================================
+' API GATEWAY + LOAD BALANCER
+' ============================================================
+
+package "🚪 Gateway & LB" {
+    component [KrakenD\n:8080\n(API Gateway)] as KrakenD
+    component [nginx Load Balancer\n:8081] as NginxLB
+}
+
+' ============================================================
+' MICROSERVICES
+' ============================================================
+
+package "🔷 Alias Service\n:8092" {
+    component [Alias REST API\n(Spring Boot 3)] as AliasAPI
+    component [Alias Repository\n(JPA/Hibernate)] as AliasRepo
+    component [Cache Layer\n(Redis)] as AliasCache
+    database [db_alias\n(MySQL 8.4)] as DB_Alias
+}
+
+package "💳 Payment Orchestration\n:8093" {
+    component [Payment REST API\n(Spring Boot 3)] as PaymentAPI
+    component [Payment Repository\n(JPA/Hibernate)] as PaymentRepo
+    component [Idempotency Cache\n(Redis)] as IdempotencyCache
+    component [Saga Choreographer\n(Kafka Consumer)] as SagaChoreographer
+    component [Outbox Polling Job] as OutboxPoller
+    database [db_payment\n(MySQL 8.4)] as DB_Payment
+}
+
+package "🏛️ Clearing Service\n:8094" {
+    component [Settlement REST API\n(Spring Boot 3)] as ClearingAPI
+    component [Ledger Repository\n(JPA/Hibernate)] as LedgerRepo
+    component [Validator\n(Signatures + Balance)] as Validator
+    component [Outbox Polling Job\n(Kafka Producer)] as ClearingPoller
+    database [db_clearing\n(MySQL 8.4)] as DB_Clearing
+}
+
+' ============================================================
+' MESSAGE BROKER
+' ============================================================
+
+package "📡 Message Infrastructure" {
+    component [Apache Kafka\n(Event Bus)] as Kafka
+    component [Kafka Topic:\nalias.registered] as Topic_Alias
+    component [Kafka Topic:\npayment.* events] as Topic_Payment
+    component [Kafka Topic:\nclearing.* events] as Topic_Clearing
+}
+
+' ============================================================
+' OBSERVABILITY LAYER
+' ============================================================
+
+package "📊 Observability" {
+    component [Prometheus\n(Metrics Scraper)] as Prometheus
+    component [Grafana\n(Dashboards)] as Grafana
+    component [ELK Stack\n(Logs)] as ELK
+}
+
+' ============================================================
+' SHARED INFRASTRUCTURE
+' ============================================================
+
+package "🛠️ Shared Infrastructure" {
+    database [Redis Cluster\n(Cache + Sessions)] as Redis
+    component [Docker Compose\nOrchestration] as DockerCompose
+    component [MailHog\n(Email Mock)] as MailHog
+}
+
+' ============================================================
+' RELATIONSHIPS - DATA FLOW
+' ============================================================
+
+WebClient --> KrakenD : HTTP/REST
+K6Tester --> KrakenD : HTTP/REST
+
+KrakenD --> NginxLB : Routes to LB
+NginxLB --> AliasAPI : distributes
+NginxLB --> PaymentAPI : distributes
+NginxLB --> ClearingAPI : distributes
+
+AliasAPI --> AliasCache : reads/writes
+AliasAPI --> AliasRepo : CRUD
+AliasCache --> Redis : storage
+AliasRepo --> DB_Alias : persistence
+
+PaymentAPI --> IdempotencyCache : lookup/store
+PaymentAPI --> PaymentRepo : CRUD
+IdempotencyCache --> Redis : storage
+PaymentRepo --> DB_Payment : persistence
+PaymentAPI --> SagaChoreographer : triggers saga
+SagaChoreographer --> Kafka : consumes events
+PaymentAPI --> OutboxPoller : manages outbox
+
+ClearingAPI --> ClearingRepo : CRUD
+ClearingRepo --> DB_Clearing : persistence
+ClearingAPI --> Validator : verifies
+ClearingAPI --> ClearingPoller : publishes
+
+OutboxPoller --> Topic_Payment : publishes
+ClearingPoller --> Topic_Clearing : publishes
+
+Topic_Alias --> SagaChoreographer : consumes
+Topic_Payment --> SagaChoreographer : consumes
+Topic_Payment --> ClearingAPI : consumes
+Topic_Clearing --> PaymentAPI : consumes (settlement_confirmed)
+
+Kafka --> Topic_Alias
+Kafka --> Topic_Payment
+Kafka --> Topic_Clearing
+
+AliasAPI --> Prometheus : metrics
+PaymentAPI --> Prometheus : metrics
+ClearingAPI --> Prometheus : metrics
+Prometheus --> Grafana : scrapes
+
+AliasAPI --> ELK : logs
+PaymentAPI --> ELK : logs
+ClearingAPI --> ELK : logs
+
+DockerCompose ..|> KrakenD : manages
+DockerCompose ..|> NginxLB : manages
+DockerCompose ..|> AliasAPI : manages
+DockerCompose ..|> PaymentAPI : manages
+DockerCompose ..|> ClearingAPI : manages
+DockerCompose ..|> Kafka : manages
+DockerCompose ..|> Redis : manages
+DockerCompose ..|> Prometheus : manages
+DockerCompose ..|> Grafana : manages
+
+PaymentAPI --> MailHog : sends OTP emails
+
+' ============================================================
+' NOTES
+' ============================================================
+
+note right of AliasAPI
+  **Alias Service:**
+  ✓ Register alias (US2)
+  ✓ Resolve alias (US4)
+  ✓ Public endpoint
+end note
+
+note right of PaymentAPI
+  **Payment Service:**
+  ✓ Initiate payment (US1, US5)
+  ✓ Respond to payment (US6)
+  ✓ Saga orchestrator
+  ✓ Idempotence via Redis
+end note
+
+note right of ClearingAPI
+  **Clearing Service:**
+  ✓ Settlement (US7)
+  ✓ Immutable ledger
+  ✓ Signed entries
+  ✓ Double-entry validation
+end note
+
+note bottom of Kafka
+  **Event-Driven Architecture:**
+  - alias.registered
+  - payment.debit_requested
+  - payment.credit_accepted
+  - payment.settlement_triggered
+  - clearing.settlement_confirmed
+end note
+
+@enduml

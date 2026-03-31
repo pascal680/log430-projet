@@ -1,0 +1,240 @@
+@startuml Diagramme de Composants - Architecture Minimale + Outbox Pattern
+title Architecture Minimale (MVP + Outbox Pattern)\nTransfert + Settlement + Garantie Exactly-Once\nDiagramme de Composants
+
+!define FONTCOLOR_COMP #333333
+skinparam component {
+    BackgroundColor #C8E6C9
+    BorderColor #388E3C
+    ArrowColor #388E3C
+}
+skinparam interface {
+    BackgroundColor #FFFFFF
+    BorderColor #388E3C
+}
+skinparam note {
+    BackgroundColor #FFF9C4
+    BorderColor #F57F17
+}
+
+' ============================================================
+' CLIENT LAYER
+' ============================================================
+
+package "👥 Client Layer" {
+    component [REST Client\n(curl/postman)] as RestClient
+}
+
+' ============================================================
+' API GATEWAY
+' ============================================================
+
+package "🚪 API Gateway" {
+    component [KrakenD\n:8080\n(JWT + Rate limit + CORS)] as KrakenD
+}
+
+' ============================================================
+' CONFIGURATION (Hardcoded Aliases)
+' ============================================================
+
+package "⚙️ Configuration & Aliases" {
+    component [application.yaml\n(Hardcoded Aliases)] as AliasConfig
+    component [AliasRegistry\n(In-Memory Map)] as AliasRegistry
+}
+
+' ============================================================
+' PAYMENT ORCHESTRATION :8083
+' ============================================================
+
+package "💳 Payment Orchestration :8083" {
+    component [Payment REST API\n(Spring Boot 3)] as PaymentAPI
+    component [Kafka Consumer\n(Saga Choreographer)] as SagaConsumer
+    component [Idempotency Cache\n(Redis TTL 24h)] as IdempotencyCache
+    component [Payment Repository\n(JPA/Hibernate)] as PaymentRepo
+
+    package "📤 Outbox Pattern" {
+        database [payment_outbox_event\n(published=false)] as PaymentOutboxTable
+        component [PaymentOutboxPublisher\n@Scheduled 500ms] as PaymentPoller
+    }
+
+    database [db_payment\n(MySQL 8.4)] as DB_Payment
+}
+
+' ============================================================
+' CLEARING SETTLEMENT :8084
+' ============================================================
+
+package "🏛️ Clearing & Settlement :8084" {
+    component [Kafka Consumer\n(settlement_triggered listener)] as ClearingConsumer
+    component [Settlement Service\n(double-entry validator)] as SettlementService
+    component [Ledger Repository\n(append-only)] as LedgerRepo
+
+    package "📤 Outbox Pattern" {
+        database [settlement_outbox_event\n(published=false)] as ClearingOutboxTable
+        component [ClearingOutboxPublisher\n@Scheduled 500ms] as ClearingPoller
+    }
+
+    database [db_clearing\n(MySQL 8.4)\nledger_entry (immutable)] as DB_Clearing
+}
+
+' ============================================================
+' MESSAGE BROKER
+' ============================================================
+
+package "📡 Kafka Broker" {
+    component [payment.initiated] as T1
+    component [payment.debit_requested] as T2
+    component [payment.credit_requested] as T3
+    component [payment.settlement_triggered] as T4
+    component [payment.settled] as T5
+    component [clearing.settlement_confirmed] as T6
+}
+
+' ============================================================
+' OBSERVABILITY
+' ============================================================
+
+package "📊 Observability" {
+    component [Prometheus] as Prometheus
+    component [Grafana] as Grafana
+}
+
+' ============================================================
+' SHARED INFRASTRUCTURE
+' ============================================================
+
+package "🛠️ Infrastructure" {
+    database [Redis\n(Idempotency cache)] as Redis
+    component [Docker Compose] as DockerCompose
+}
+
+' ============================================================
+' RELATIONSHIPS - DATA FLOW
+' ============================================================
+
+RestClient --> KrakenD : HTTP/REST
+KrakenD --> PaymentAPI : route /api/payment/**
+
+AliasConfig --> AliasRegistry : charge au démarrage
+PaymentAPI --> AliasRegistry : resolve(alias)
+PaymentAPI --> IdempotencyCache : lookup / store
+IdempotencyCache --> Redis : GET/SET
+
+' Outbox write path (atomic)
+PaymentAPI --> PaymentRepo : INSERT payment (tx)
+PaymentAPI --> PaymentOutboxTable : INSERT outbox_event (même tx)
+PaymentRepo --> DB_Payment
+PaymentOutboxTable --> DB_Payment
+
+' Outbox poll & publish
+PaymentPoller --> PaymentOutboxTable : SELECT WHERE published=false
+PaymentPoller --> T1 : send payment.initiated
+PaymentPoller --> T2 : send payment.debit_requested
+PaymentPoller --> T3 : send payment.credit_requested
+PaymentPoller --> T4 : send payment.settlement_triggered
+PaymentPoller --> T5 : send payment.settled
+PaymentPoller --> PaymentOutboxTable : UPDATE published=true
+
+' Saga consumer
+SagaConsumer --> T1 : consumes
+SagaConsumer --> T2 : consumes
+SagaConsumer --> T3 : consumes
+SagaConsumer --> T6 : consumes (→ SETTLED)
+SagaConsumer --> PaymentRepo : UPDATE status
+SagaConsumer --> PaymentOutboxTable : INSERT next outbox event
+
+' Clearing write path (atomic)
+ClearingConsumer --> T4 : consumes
+ClearingConsumer --> SettlementService : record entries
+SettlementService --> LedgerRepo : INSERT entry(DEBIT) + entry(CREDIT)
+SettlementService --> ClearingOutboxTable : INSERT outbox_event (même tx)
+LedgerRepo --> DB_Clearing
+ClearingOutboxTable --> DB_Clearing
+
+' Clearing outbox poll & publish
+ClearingPoller --> ClearingOutboxTable : SELECT WHERE published=false
+ClearingPoller --> T6 : send clearing.settlement_confirmed
+ClearingPoller --> ClearingOutboxTable : UPDATE published=true
+
+' Observability
+PaymentAPI --> Prometheus : /actuator/prometheus
+ClearingConsumer --> Prometheus : /actuator/prometheus
+Prometheus --> Grafana : scrape
+
+DockerCompose ..|> KrakenD : manages
+DockerCompose ..|> PaymentAPI : manages
+DockerCompose ..|> ClearingConsumer : manages
+DockerCompose ..|> Kafka : manages
+DockerCompose ..|> Redis : manages
+DockerCompose ..|> Prometheus : manages
+DockerCompose ..|> Grafana : manages
+
+' ============================================================
+' NOTES
+' ============================================================
+
+note right of AliasRegistry
+  **Hardcoded Aliases:**
+  ✗ Pas de service alias
+  ✗ Pas de DB
+  ✗ Pas de YAML
+  ✓ Map<String,AliasEntry> dans
+    AliasRegistry.java
+  ✓ Chargée au démarrage (@PostConstruct)
+end note
+
+note right of PaymentOutboxTable
+  **Outbox Pattern (Payment):**
+  Garantit atomicité entre
+  écriture DB et Kafka:
+  1. Payment + OutboxEvent
+     → même transaction JPA
+  2. @Scheduled poll 500ms
+     → kafkaTemplate.send()
+  3. published = true
+  Pas de perte d'événement
+  même si Kafka est down
+end note
+
+note right of ClearingOutboxTable
+  **Outbox Pattern (Clearing):**
+  1. LedgerEntry(×2) + OutboxEvent
+     → même transaction JPA
+  2. @Scheduled poll 500ms
+     → publie settlement_confirmed
+  3. published = true
+end note
+
+note right of DB_Clearing
+  **Ledger Immuable:**
+  • Append-only (pas de UPDATE)
+  • UNIQUE(payment_id, direction)
+  • SHA256 hash par entrée
+  • SQL trigger anti-mutation
+  • DEBIT = CREDIT validé
+end note
+
+note bottom of T4
+  **Topics Kafka (6 total):**
+  payment.initiated
+  payment.debit_requested
+  payment.credit_requested
+  payment.settlement_triggered
+  payment.settled
+  clearing.settlement_confirmed
+  
+  Partitionné par paymentId
+  → ordering garanti par paiement
+end note
+
+note bottom of DockerCompose
+  **Saga Chorégraphiée — Règles:**
+  ✓ Aucun appel REST entre services
+  ✓ Communication uniquement via Kafka
+  ✓ Chaque service réagit aux events
+     de façon autonome
+  ✓ Outbox garantit at-least-once
+  ✓ Idempotency garantit exactly-once
+  ✗ Pas d'Alias Service
+end note
+
+@enduml

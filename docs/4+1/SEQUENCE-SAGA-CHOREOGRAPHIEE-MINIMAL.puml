@@ -1,0 +1,163 @@
+@startuml Saga Chorégraphiée - Architecture Minimale + Outbox Pattern
+title Saga Chorégraphiée - Architecture Minimale + Outbox Pattern\nChaque service réagit aux événements Kafka de façon autonome — aucun appel REST inter-services\nAliases hardcodés dans AliasRegistry.java
+
+actor "Client / Payeur" as Client
+participant "API Gateway\n(KrakenD)\n:8080" as Gateway
+participant "Payment\nOrchestration\n:8083" as Payment
+participant "payment_outbox_event\n(MySQL)" as PaymentOutbox
+participant "PaymentOutbox\nPublisher\n@Scheduled 500ms" as PaymentPoller
+participant "Kafka\nBroker" as Kafka
+participant "Clearing &\nSettlement\n:8084" as Settlement
+participant "settlement_outbox_event\n(MySQL)" as ClearingOutbox
+participant "ClearingOutbox\nPublisher\n@Scheduled 500ms" as ClearingPoller
+participant "ledger_entry\n(Immutable)" as Ledger
+
+== Phase 1: Initier le paiement ==
+Client -> Gateway: POST /api/payment/initiate\n{alias, amount, idempotencyKey}
+
+activate Gateway
+Gateway -> Payment: Route vers Payment Service
+activate Payment
+
+Payment -> Payment: Idempotency Check (Redis)
+alt Cache Hit
+    Payment --> Gateway: 200 OK (réponse cachée)
+else Cache Miss
+    Payment -> Payment: Resolve alias\n(AliasRegistry en mémoire)
+    note right of Payment
+        Aliases hardcodés
+        directement dans
+        AliasRegistry.java
+        (Map<String, AliasEntry>)
+        — aucun YAML, aucune DB
+    end note
+
+    Payment -> Payment: ── TRANSACTION ATOMIQUE ──
+    Payment -> Payment: INSERT payment\n{id, idempotencyKey, status=INITIATED}
+    Payment -> PaymentOutbox: INSERT payment_outbox_event\n{eventType="payment.initiated", published=false}
+    Payment -> Payment: ── COMMIT ──
+
+    Payment -> Payment: Cache dans Redis\n(idempotencyKey → paymentId, TTL 24h)
+    Payment --> Gateway: 201 Created\n{paymentId, status=INITIATED}
+end
+
+deactivate Payment
+Gateway --> Client: {paymentId, status=INITIATED}
+deactivate Gateway
+
+== Outbox: publier payment.initiated ==
+PaymentPoller -> PaymentOutbox: SELECT WHERE published=false
+activate PaymentPoller
+PaymentOutbox --> PaymentPoller: [payment.initiated row]
+PaymentPoller -> Kafka: send("payment.initiated", paymentId, payload)
+activate Kafka
+Kafka --> PaymentPoller: ACK
+deactivate Kafka
+PaymentPoller -> PaymentOutbox: UPDATE published=true, publishedAt=now()
+deactivate PaymentPoller
+
+== Phase 2: Débit Bank A (interne) ==
+Kafka -> Payment: consume payment.initiated
+activate Payment
+Payment -> Payment: [Bank A] Débit Alice: -100 CAD
+Payment -> Payment: ── TRANSACTION ATOMIQUE ──
+Payment -> Payment: UPDATE payment SET status=DEBIT_REQUESTED
+Payment -> PaymentOutbox: INSERT payment_outbox_event\n{eventType="payment.debit_requested", published=false}
+Payment -> Payment: ── COMMIT ──
+deactivate Payment
+
+PaymentPoller -> PaymentOutbox: SELECT WHERE published=false
+activate PaymentPoller
+PaymentPoller -> Kafka: send("payment.debit_requested", paymentId, payload)
+PaymentPoller -> PaymentOutbox: UPDATE published=true
+deactivate PaymentPoller
+
+== Phase 3: Crédit Bank B (interne) ==
+Kafka -> Payment: consume payment.debit_requested
+activate Payment
+Payment -> Payment: [Bank B] Crédit Bob: +100 CAD
+Payment -> Payment: ── TRANSACTION ATOMIQUE ──
+Payment -> Payment: UPDATE payment SET status=CREDIT_REQUESTED
+Payment -> PaymentOutbox: INSERT payment_outbox_event\n{eventType="payment.credit_requested", published=false}
+Payment -> Payment: ── COMMIT ──
+deactivate Payment
+
+PaymentPoller -> PaymentOutbox: SELECT WHERE published=false
+activate PaymentPoller
+PaymentPoller -> Kafka: send("payment.credit_requested", paymentId, payload)
+PaymentPoller -> PaymentOutbox: UPDATE published=true
+deactivate PaymentPoller
+
+== Phase 4: Déclencher le règlement ==
+Kafka -> Payment: consume payment.credit_requested
+activate Payment
+Payment -> Payment: ── TRANSACTION ATOMIQUE ──
+Payment -> Payment: UPDATE payment SET status=SETTLEMENT_TRIGGERED
+Payment -> PaymentOutbox: INSERT payment_outbox_event\n{eventType="payment.settlement_triggered", published=false}
+Payment -> Payment: ── COMMIT ──
+deactivate Payment
+
+PaymentPoller -> PaymentOutbox: SELECT WHERE published=false
+activate PaymentPoller
+PaymentPoller -> Kafka: send("payment.settlement_triggered", paymentId, payload)
+PaymentPoller -> PaymentOutbox: UPDATE published=true
+deactivate PaymentPoller
+
+== Phase 5: Enregistrer le ledger immuable ==
+Kafka -> Settlement: consume payment.settlement_triggered
+activate Settlement
+Settlement -> Settlement: Valider les prérequis
+
+Settlement -> Settlement: ── TRANSACTION ATOMIQUE ──
+Settlement -> Ledger: INSERT ledger_entry (DEBIT)\nparticipantId=BankA, amount=100, hash=SHA256(...)
+activate Ledger
+Ledger --> Settlement: Appended (immutable)
+Settlement -> Ledger: INSERT ledger_entry (CREDIT)\nparticipantId=BankB, amount=100, hash=SHA256(...)
+Ledger --> Settlement: Appended (immutable)
+deactivate Ledger
+Settlement -> Settlement: Valider: SUM(DEBIT) = SUM(CREDIT)
+Settlement -> ClearingOutbox: INSERT settlement_outbox_event\n{eventType="clearing.settlement_confirmed", published=false}
+Settlement -> Settlement: ── COMMIT ──
+deactivate Settlement
+
+== Outbox: publier clearing.settlement_confirmed ==
+ClearingPoller -> ClearingOutbox: SELECT WHERE published=false
+activate ClearingPoller
+ClearingOutbox --> ClearingPoller: [clearing.settlement_confirmed row]
+ClearingPoller -> Kafka: send("clearing.settlement_confirmed", paymentId, payload)
+activate Kafka
+Kafka --> ClearingPoller: ACK
+deactivate Kafka
+ClearingPoller -> ClearingOutbox: UPDATE published=true, publishedAt=now()
+deactivate ClearingPoller
+
+== Phase 6: Finaliser le paiement ==
+Kafka -> Payment: consume clearing.settlement_confirmed
+activate Payment
+Payment -> Payment: ── TRANSACTION ATOMIQUE ──
+Payment -> Payment: UPDATE payment SET status=SETTLED, settledAt=now()
+Payment -> PaymentOutbox: INSERT payment_outbox_event\n{eventType="payment.settled", published=false}
+Payment -> Payment: ── COMMIT ──
+deactivate Payment
+
+PaymentPoller -> PaymentOutbox: SELECT WHERE published=false
+activate PaymentPoller
+PaymentPoller -> Kafka: send("payment.settled", paymentId, payload)
+PaymentPoller -> PaymentOutbox: UPDATE published=true
+deactivate PaymentPoller
+
+== État Final ==
+note over Client, Ledger
+  ÉTAT FINAL (IMMUABLE):
+  Payment Status: SETTLED
+  Alice Balance: -100 CAD (final)
+  Bob Balance: +100 CAD (final)
+  BC Ledger: DEBIT = CREDIT (append-only, SHA256)
+  Durée: ~1000-1500ms
+  Garantie: Exactly-Once
+    → Idempotency key (Redis 24h)
+    → Outbox at-least-once Kafka
+    → Consumer idempotent
+end note
+
+@enduml
