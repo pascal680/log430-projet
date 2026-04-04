@@ -71,6 +71,8 @@ services:
     url: ${ACCOUNT_SERVICE_URL:http://account-service:8082}
   identity:
     url: ${IDENTITY_SERVICE_URL:http://identity-service:8081}
+  central-bank:
+    url: ${CENTRAL_BANK_URL:http://localhost:18080}
 
 # Actuator — expose /health, /prometheus, /metrics
 management:

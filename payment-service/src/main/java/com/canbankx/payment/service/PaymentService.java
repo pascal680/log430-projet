@@ -1,9 +1,11 @@
 package com.canbankx.payment.service;
 
 import com.canbankx.payment.client.AccountClient;
+import com.canbankx.payment.client.CentralBankClient;
 import com.canbankx.payment.client.IdentityClient;
 import com.canbankx.payment.dto.AccountInfoDTO;
 import com.canbankx.payment.dto.ClientInfoDTO;
+import com.canbankx.payment.dto.InterbankPaymentRequestDTO;
 import com.canbankx.payment.exceptions.PaymentNotFoundException;
 import com.canbankx.payment.dto.PaymentRequestDTO;
 import com.canbankx.payment.model.AuditLog;
@@ -23,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.domain.Pageable;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -40,12 +43,17 @@ public class PaymentService {
     private final AuditLogRepository auditLogRepository;
     private final EmailService emailService;
     private final AccountClient accountClient;
+    private final CentralBankClient centralBankClient;
     private final IdentityClient identityClient;
     private final StringRedisTemplate redisTemplate;
 
     /** Background thread pool for fire-and-forget email notifications. */
     @Qualifier("emailTaskExecutor")
     private final Executor emailTaskExecutor;
+
+    public Map<String, Object> submitInterbank(String participantId, InterbankPaymentRequestDTO request) {
+        return centralBankClient.initiatePayment(participantId, request);
+    }
 
     public BankTransaction submit(String idempotencyKey, PaymentRequestDTO dto) {
         String redisKey = REDIS_KEY_PREFIX + idempotencyKey;

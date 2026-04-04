@@ -1,6 +1,7 @@
 package com.canbankx.payment.controller;
 
 import com.canbankx.payment.dto.AuditLogResponseDTO;
+import com.canbankx.payment.dto.InterbankPaymentRequestDTO;
 import com.canbankx.payment.dto.PaymentRequestDTO;
 import com.canbankx.payment.dto.PaymentResponseDTO;
 import com.canbankx.payment.model.BankTransaction;
@@ -25,6 +26,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -37,6 +39,24 @@ public class PaymentController {
 
     private final PaymentService paymentService;
     private final AuditLogRepository auditLogRepository;
+
+    @PostMapping("/interbank")
+    @Operation(
+            summary = "Submit interbank transfer via central bank",
+            description = "For transfers to external banks through the central bank choreography service. "
+                + "Requires X-Participant-Id (this bank ID)."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "201", description = "Interbank transfer accepted by central bank", content = @Content),
+            @ApiResponse(responseCode = "400", description = "Validation error", content = @Content),
+            @ApiResponse(responseCode = "4XX/5XX", description = "Error from central bank", content = @Content)
+    })
+    public ResponseEntity<Map<String, Object>> submitInterbank(
+            @RequestHeader("X-Participant-Id") String participantId,
+            @Valid @org.springframework.web.bind.annotation.RequestBody InterbankPaymentRequestDTO dto) {
+        Map<String, Object> response = paymentService.submitInterbank(participantId, dto);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
 
     @PostMapping
     @Operation(
