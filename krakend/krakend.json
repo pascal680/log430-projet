@@ -121,6 +121,13 @@
       "backend": [{ "url_pattern": "/paymentservice/transactions", "encoding": "json", "method": "POST", "host": ["http://nginx-lb:8083"] }]
     },
     {
+      "endpoint": "/api/transactions/interbank",
+      "method": "POST",
+      "output_encoding": "no-op",
+      "input_headers": ["Content-Type", "Authorization", "X-Participant-Id"],
+      "backend": [{ "url_pattern": "/paymentservice/transactions/interbank", "encoding": "json", "method": "POST", "host": ["http://nginx-lb:8083"] }]
+    },
+    {
       "endpoint": "/api/transactions/{id}",
       "method": "GET",
       "output_encoding": "no-op",

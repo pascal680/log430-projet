@@ -6,16 +6,17 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "gateway_url",    "value": "http://localhost:8080", "description": "KrakenD API Gateway — use this for all business requests" },
-    { "key": "identity_url",   "value": "http://localhost:8081", "description": "Direct — only for health / endpoints not in gateway" },
-    { "key": "account_url",    "value": "http://localhost:8082", "description": "Direct — only for health / internal endpoints" },
-    { "key": "payment_url",    "value": "http://localhost:8083", "description": "Direct — only for health / internal endpoints" },
-    { "key": "mailhog_url",    "value": "http://localhost:8025", "description": "MailHog SMTP capture UI — view emails and OTP codes here" },
+    { "key": "gateway_url",    "value": "http://localhost:28080", "description": "KrakenD API Gateway — use this for all business requests" },
+    { "key": "identity_url",   "value": "http://localhost:28081", "description": "Direct — only for health / endpoints not in gateway" },
+    { "key": "account_url",    "value": "http://localhost:28082", "description": "Direct — only for health / internal endpoints" },
+    { "key": "payment_url",    "value": "http://localhost:28083", "description": "Direct — only for health / internal endpoints" },
+    { "key": "mailhog_url",    "value": "http://localhost:28025", "description": "MailHog SMTP capture UI — view emails and OTP codes here" },
     { "key": "client_id",             "value": "" },
     { "key": "account_id",            "value": "" },
     { "key": "account_number",        "value": "" },
     { "key": "target_account_number", "value": "", "description": "Set this to a second account number to enable the TRANSFER happy-path test" },
     { "key": "transaction_id",        "value": "" },
+    { "key": "interbank_payment_id",  "value": "" },
     { "key": "challenge_token",       "value": "" },
     { "key": "mfa_otp",               "value": "", "description": "Auto-populated by the Verify MFA pre-request script from MailHog" }
   ],
@@ -437,6 +438,42 @@
           }
         },
         {
+          "name": "UC-05 — Submit INTERBANK Transfer (Demo)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('interbank_payment_id', body.id);",
+                  "    console.log('interbank_payment_id saved:', body.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Basic ZGVtbzpkZW1vMTIzIQ==", "description": "demo / demo123!" },
+              { "key": "X-Participant-Id", "value": "participant-003", "description": "Sender bank participant id" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{$randomUUID}}\",\n  \"senderAccountNumber\": \"3000600001\",\n  \"recipientAccountNumber\": \"2000300001\",\n  \"amount\": 15.00,\n  \"currency\": \"CAD\"\n}"
+            },
+            "url": {
+              "raw": "{{gateway_url}}/api/transactions/interbank",
+              "host": ["{{gateway_url}}"],
+              "path": ["api", "transactions", "interbank"]
+            },
+            "description": "Demo entrypoint for LOG430 -> phase2 interbank transfer through KrakenD.\nUses Basic Auth demo/demo123! and saves `interbank_payment_id` for next requests."
+          }
+        },
+        {
           "name": "UC-05 — Idempotency Test (duplicate key)",
           "request": {
             "method": "POST",
@@ -481,6 +518,36 @@
               "query": [{ "key": "accountNumber", "value": "{{account_number}}", "description": "Remove or leave blank to list all transactions" }]
             },
             "description": "KrakenD → GET /paymentservice/transactions?accountNumber=..."
+          }
+        },
+        {
+          "name": "Interbank Demo — Check Central Payment Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:18083/api/payments/{{interbank_payment_id}}",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "18083",
+              "path": ["api", "payments", "{{interbank_payment_id}}"]
+            },
+            "description": "Reads phase2 payment status directly from nginx-lb.\nExpected progression: INITIATED -> CREDIT_REQUESTED -> SETTLEMENT_TRIGGERED -> SETTLED"
+          }
+        },
+        {
+          "name": "Interbank Demo — Get Ledger Entries",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:18084/api/ledger/{{interbank_payment_id}}",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "18084",
+              "path": ["api", "ledger", "{{interbank_payment_id}}"]
+            },
+            "description": "Final proof for demo: expect 2 entries (DEBIT sender, CREDIT recipient)."
           }
         }
       ]

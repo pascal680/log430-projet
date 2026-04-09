@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: identity-service/Dockerfile
     ports:
-      - "8081:8081"
+      - "28081:8081"
     environment:
       DB_HOST: mysql
       DB_PORT: 3306
@@ -43,7 +43,7 @@ services:
       context: .
       dockerfile: account-service/Dockerfile
     ports:
-      - "8082:8082"
+      - "28082:8082"
     environment:
       DB_HOST: mysql
       DB_PORT: 3306
@@ -68,19 +68,81 @@ services:
       retries: 5
       start_period: 40s
 
+  # Internal responder for participant-002 (no host port).
+  # This enables phase2 CREDIT_REQUESTED -> SETTLED without manual Kafka injection.
+  account-service-p002:
+    build:
+      context: .
+      dockerfile: account-service/Dockerfile
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: db_account
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      SERVER_PORT: 8082
+      BANK_PARTICIPANT_ID: participant-002
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-canbankx-phase2-kafka-1:9094}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    networks:
+      - canbankx-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # account-service participant-002 responder for phase2 interbank saga
+  # Internal-only: no published host port required.
+  account-service-participant-002:
+    build:
+      context: .
+      dockerfile: account-service/Dockerfile
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: db_account
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      SERVER_PORT: 8082
+      BANK_PARTICIPANT_ID: participant-002
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-canbankx-phase2-kafka-1:9094}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    networks:
+      - canbankx-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
   # payment-service — UC-05 Virements (Redis idempotency + inter-service calls)
   payment-service:
     build:
       context: .
       dockerfile: payment-service/Dockerfile
     ports:
-      - "8083:8083"
+      - "28083:8083"
     environment:
       DB_HOST: mysql
       DB_PORT: 3306
       DB_NAME: db_payment
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
+      SPRING_SECURITY_USER_NAME: demo
+      SPRING_SECURITY_USER_PASSWORD: demo123!
       REDIS_HOST: redis
       REDIS_PORT: 6379
       SERVER_PORT: 8083
@@ -190,6 +252,8 @@ services:
       DB_NAME: db_payment
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
+      SPRING_SECURITY_USER_NAME: demo
+      SPRING_SECURITY_USER_PASSWORD: demo123!
       REDIS_HOST: redis
       REDIS_PORT: 6379
       SERVER_PORT: 8083
@@ -274,7 +338,7 @@ services:
     networks:
       - canbankx-net
     ports:
-      - "${DB_PORT:-3306}:3306"
+      - "${DB_PORT:-23306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./db-init:/docker-entrypoint-initdb.d
@@ -325,7 +389,7 @@ services:
     networks:
       - canbankx-net
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "${REDIS_PORT:-26379}:6379"
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
     volumes:
       - redis_data:/data
@@ -341,8 +405,8 @@ services:
     image: mailhog/mailhog:latest
     platform: linux/amd64   # no ARM64 image exists; Rosetta emulation on Apple Silicon
     ports:
-      - "1025:1025"   # SMTP – services send mail here
-      - "8025:8025"   # Web UI – view captured emails at http://localhost:8025
+      - "21025:1025"   # SMTP (host) -> container 1025
+      - "28025:8025"   # Web UI at http://localhost:28025
     networks:
       - canbankx-net
     restart: unless-stopped
@@ -350,7 +414,7 @@ services:
   prometheus:
     image: prom/prometheus:latest
     ports:
-      - "9090:9090"
+      - "29090:9090"
     volumes:
       - ./prometheus/config.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -361,7 +425,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     ports:
-      - "3000:3000"
+      - "23000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
@@ -382,7 +446,7 @@ services:
   krakend:
     image: devopsfaith/krakend:2.7
     ports:
-      - "8080:8080"
+      - "28080:8080"
     volumes:
       - ./krakend/${KRAKEND_CONFIG:-krakend-nolb.json}:/etc/krakend/krakend.json
     command: ["run", "-c", "/etc/krakend/krakend.json"]
@@ -413,7 +477,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "5173:3000"
+      - "25173:3000"
     depends_on:
       krakend:
         condition: service_healthy
